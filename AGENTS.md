@@ -40,16 +40,18 @@ Do not redefine project requirements inside source code comments or implementati
 
 ## 3. Additional Project Documentation
 
-When present, use the following documents as supporting context:
+Alongside `docs/SPECIFICATION.md`, the current project documentation is organised into:
 
-- `docs/ARCHITECTURE.md` — system architecture and component responsibilities;
-- `docs/PIPELINE.md` — processing pipeline and data flow;
-- `docs/decisions/` — Architecture Decision Records and important technical decisions;
-- `README.md` — setup, usage, and developer-facing repository overview.
+- `docs/adr/` — Architecture Decision Records containing the status, context, decision, and consequences of important technical choices;
+- `docs/milestones/` — milestone goals, implementation scope, and milestone-specific pipelines.
 
-Not all of these files are required to exist yet.
+Read the applicable ADRs and milestone document before implementing related work.
 
-Do not create unnecessary documentation files merely because they are listed here.
+
+
+Milestone documents define the bounded work for that milestone; they do not imply that every long-term capability in the specification must be implemented immediately. Keep technical decision details in ADRs and milestone details in their milestone documents rather than duplicating them here.
+
+There are currently no separate architecture or pipeline documents. Do not create additional documentation files merely to fill a presumed structure. `README.md` is the repository overview.
 
 ---
 
@@ -644,6 +646,8 @@ When implementation changes alter documented behavior, update the relevant docum
 
 Do not allow architecture or pipeline documentation to become knowingly inconsistent with the implementation.
 
+Update the relevant document in `docs/milestones/` when an agreed milestone scope or pipeline changes, and record meaningful technical decision changes in `docs/adr/`.
+
 Changes to implementation details do not automatically require changes to the functional specification.
 
 Change `docs/SPECIFICATION.md` only when the intended product behavior or requirements change.
@@ -662,7 +666,9 @@ Examples include:
 - changing the pipeline architecture;
 - introducing external services.
 
-When `docs/decisions/` exists, use Architecture Decision Records for decisions whose rationale is likely to matter later.
+Use `docs/adr/` for Architecture Decision Records whose rationale is likely to matter later. Follow the existing structure: status, context, decision, and consequences.
+
+Check each relevant ADR's status before applying it. Accepted ADRs guide implementation within the specification; they may resolve technical questions that the specification leaves open. Do not silently replace an accepted decision. When a decision changes, preserve its rationale and make the replacement explicit in the ADR documentation.
 
 Do not create ADRs for trivial implementation choices.
 
@@ -749,7 +755,7 @@ Use appropriate configuration or environment-based secret handling.
 When modifying this repository:
 
 1. inspect the relevant existing code before editing;
-2. read the relevant specification/documentation;
+2. read the relevant parts of `docs/SPECIFICATION.md`, applicable ADRs in `docs/adr/`, and the relevant milestone document in `docs/milestones/`;
 3. understand the current architecture before introducing new abstractions;
 4. make the smallest coherent change that solves the task;
 5. preserve unrelated behavior;
@@ -764,6 +770,8 @@ Do not rewrite unrelated parts of the codebase merely to make them match persona
 
 Before implementing a significant new feature, determine:
 
+- which milestone it belongs to and whether it is within that milestone's documented scope;
+- which accepted ADRs constrain the implementation;
 - where it belongs in the pipeline;
 - what its input is;
 - what its output is;
@@ -773,7 +781,7 @@ Before implementing a significant new feature, determine:
 - how it can be tested;
 - how failures can be diagnosed.
 
-If these are unclear because the specification does not define the required behavior, identify the ambiguity rather than inventing major product requirements.
+If these remain unclear after reading the specification, applicable ADRs, and milestone document, identify the ambiguity rather than inventing major product requirements.
 
 ---
 
@@ -826,8 +834,8 @@ When instructions conflict, use this priority:
 
 1. explicit instructions from the user for the current task;
 2. `docs/SPECIFICATION.md`;
-3. applicable Architecture Decision Records;
-4. `docs/ARCHITECTURE.md`;
+3. applicable accepted Architecture Decision Records in `docs/adr/`;
+4. the relevant milestone document in `docs/milestones/`;
 5. this `AGENTS.md`;
 6. existing implementation behavior;
 7. assumptions.
