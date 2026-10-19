@@ -1,0 +1,8 @@
+.tools/
+.cache/
+*.log
+.idea/
+*.iml
+.env
+.env.*
+!.env.example
