@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { DragEvent, FormEvent, ReactNode, SVGProps } from 'react'
+import { buildKnowledgeBase } from './knowledgeBaseApi'
 import './App.css'
 
 type Action = 'knowledge' | 'chapters'
-type LogLevel = 'info' | 'success' | 'warning'
+type LogLevel = 'info' | 'success' | 'warning' | 'error'
 type LogEntry = { id: number; timestamp: Date; level: LogLevel; message: string }
 type VideoFile = { id: string; file: File }
 
@@ -40,6 +41,8 @@ export default function App() {
   const [action, setAction] = useState<Action>('knowledge')
   const [videos, setVideos] = useState<VideoFile[]>([])
   const [dragging, setDragging] = useState(false)
+  const [isBuilding, setIsBuilding] = useState(false)
+  const buildInFlight = useRef(false)
   const [logs, setLogs] = useState<LogEntry[]>(() => [
     { id: 0, timestamp: new Date(), level: 'info', message: 'Workspace ready. Enter a game name and choose an action.' },
   ])
@@ -110,10 +113,22 @@ export default function App() {
     addVideos(event.dataTransfer.files)
   }
 
-  function startKnowledge(event: FormEvent<HTMLFormElement>) {
+  async function startKnowledge(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (action !== 'knowledge' || !gameName.trim()) return
-    log('warning', `Cannot start Build Knowledge Base for "${gameName.trim()}": processing is not connected yet. No job was started.`)
+    const requestedGame = gameName.trim()
+    if (action !== 'knowledge' || !requestedGame || buildInFlight.current) return
+    buildInFlight.current = true
+    setIsBuilding(true)
+    log('info', `Requesting game knowledge for "${requestedGame}". Waiting for LM Studio; this may take several minutes.`)
+    try {
+      const result = await buildKnowledgeBase(requestedGame)
+      log(result.status === 'already_exists' ? 'info' : 'success', `${requestedGame}: ${result.message}`)
+    } catch (error) {
+      log('error', `${requestedGame}: ${error instanceof Error ? error.message : 'Knowledge-base acquisition failed.'}`)
+    } finally {
+      buildInFlight.current = false
+      setIsBuilding(false)
+    }
   }
 
   return (
@@ -147,13 +162,13 @@ export default function App() {
             <div className="form-fields">
               <div className="field">
                 <label htmlFor="game-name">Game name</label>
-                <input id="game-name" name="gameName" placeholder="e.g. Mortal Shell" value={gameName} onChange={event => setGameName(event.target.value)} required maxLength={200} autoComplete="off" aria-describedby="game-hint" />
+                <input id="game-name" name="gameName" placeholder="e.g. Mortal Shell" value={gameName} onChange={event => setGameName(event.target.value)} required maxLength={200} autoComplete="off" aria-describedby="game-hint" disabled={isBuilding} />
                 <p id="game-hint" className="field-hint">The game you want to work with.</p>
               </div>
               <div className="field">
                 <label htmlFor="action">Action</label>
                 <div className="select-wrapper">
-                  <select id="action" value={action} onChange={event => selectAction(event.target.value as Action)}>
+                  <select id="action" value={action} onChange={event => selectAction(event.target.value as Action)} disabled={isBuilding}>
                     <option value="knowledge">Build Knowledge Base</option>
                     <option value="chapters">Build Chapters</option>
                   </select>
@@ -178,8 +193,8 @@ export default function App() {
                   </div>
                 </div>
                 <div className="action-footer">
-                  <p><span className="status-dot muted" />Processing is not connected yet.</p>
-                  <button className="primary-button" type="submit" disabled={!gameName.trim()}><Icon name="play" width="16" height="16" />Start</button>
+                  <p role="status"><span className="status-dot muted" />{isBuilding ? 'Waiting for LM Studio…' : 'Results are validated and printed in the backend console.'}</p>
+                  <button className="primary-button" type="submit" disabled={!gameName.trim() || isBuilding}><Icon name="play" width="16" height="16" />{isBuilding ? 'Working…' : 'Start'}</button>
                 </div>
               </div>
             ) : (
@@ -229,7 +244,7 @@ export default function App() {
               </div>
             ))}
           </div>
-          <div className="log-footer"><span><span className="status-dot muted" />No active jobs</span><span>Session activity · Latest {maxLogEntries} entries</span></div>
+          <div className="log-footer"><span><span className="status-dot muted" />{isBuilding ? 'Knowledge acquisition in progress' : 'No active requests'}</span><span>Session activity · Latest {maxLogEntries} entries</span></div>
         </section>
       </main>
       <footer className="app-footer"><span>PROJECT YCG</span><span>Built around your gameplay.</span></footer>
