@@ -17,6 +17,10 @@ The initial English frontend exposes a game name and two actions:
 **Build Knowledge Base** and **Build Chapters**. Build Knowledge Base provides a
 Start button; Build Chapters provides multiple-video drag and drop and file
 selection. An activity log is available below either action.
+Build Chapters shows a Process button below the video picker. It is enabled
+only while a nonblank game name and at least one video are selected; processing
+remains unconnected. The processing action must validate both inputs again when
+it is connected in a later increment.
 
 Build Knowledge Base is connected to a synchronous backend request. Start
 reports a pending request and then success or failure in the activity log.

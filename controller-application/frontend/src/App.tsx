@@ -224,7 +224,10 @@ export default function App() {
                     ))}
                   </ul>
                 )}
-                <p className="video-note"><span className="status-dot muted" />Files stay on your device. Processing is not connected yet.</p>
+                <div className="action-footer video-footer">
+                  <p className="video-note"><span className="status-dot muted" />Files stay on your device. Processing is not connected yet.</p>
+                  <button className="primary-button" type="button" disabled={!gameName.trim() || videos.length === 0}><Icon name="play" width="16" height="16" />Process</button>
+                </div>
               </div>
             )}
           </form>

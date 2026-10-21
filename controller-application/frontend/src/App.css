@@ -99,6 +99,7 @@ h4 { font-size: 14px; font-weight: 550; }
 .icon-button { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid transparent; border-radius: 5px; color: var(--muted); background: transparent; }
 .icon-button:hover { background: #32303a; color: #f5b5b5; }
 .video-note { margin-top: 18px; }
+.video-footer .video-note { margin-top: 0; }
 .activity-panel { margin-top: auto; }
 .activity-heading { min-height: 54px; padding: 14px 22px; }
 .activity-heading svg { color: #94a5b5; }
