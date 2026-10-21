@@ -1,0 +1,19 @@
+[tools]
+ffmpeg = "ffmpeg"
+ffprobe = "ffprobe"
+
+[proxy]
+acceleration = "cpu"
+video_codec = "h264_nvenc"
+width = 854
+height = 480
+bitrate_kbps = 2000
+buffer_size_kbps = 4000
+pixel_format = "yuv420p"
+encoder_preset = "p4"
+
+[sampling]
+jpeg_quality = 2
+
+[progress]
+interval_seconds = 1.0
