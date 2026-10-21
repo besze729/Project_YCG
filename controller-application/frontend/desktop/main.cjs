@@ -50,12 +50,26 @@ function createWindow(options = {}) {
   })
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', event => event.preventDefault())
-  window.loadURL('ycg://app/')
+  window.loadURL('ycg://app/').then(() => {
+    window.show()
+    window.focus()
+    console.log('Project YCG desktop window is ready.')
+  }).catch(error => {
+    console.error('Project YCG desktop window could not load:', error)
+  })
   return window
 }
 
-if (require.main === module) {
-  app.whenReady().then(() => { registerProtocol(); createWindow() })
+// Electron's main-process loader does not always set require.main to this file.
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  console.log('Project YCG desktop starting.')
+  app.whenReady().then(() => {
+    console.log('Electron is ready; creating desktop window.')
+    registerProtocol(); createWindow()
+  }).catch(error => {
+    console.error('Project YCG desktop could not start:', error)
+    app.exit(1)
+  })
   app.on('window-all-closed', () => app.quit())
 }
 
