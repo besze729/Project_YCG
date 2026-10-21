@@ -85,11 +85,19 @@ endTime = 01:12:00
 The service streams FFmpeg progress while proxy generation or frame sampling is
 running. Its CLI shows frame count, FPS, processing speed, and source position;
 proxy generation also shows approximate percent complete. The Python operations
-offer structured progress events so the controller can later relay them to the
-frontend. The start event includes the exact FFmpeg argument list, which the CLI
+offer structured progress events relayed through the local HTTP adapter and
+controller SSE stream to the frontend. The start event includes the exact FFmpeg argument list, which the CLI
 prints before status updates. FFmpeg errors remain visible, and completion is
 reported only after the output has been validated and published. The update
 interval is configurable.
+
+The FastAPI adapter accepts the game title and absolute input/output paths over
+local REST and streams newline-delimited JSON progress. It reads the original
+source file directly. The controller owns batch ordering, job metadata, output
+locations, persistent event logs, and frontend reconnection. FFmpeg settings
+remain in the Python TOML configuration, with an optional `YCG_VIDEO_CONFIG`
+override loaded for each request. A disconnected controller interrupts encoding
+at the next progress callback; a disconnected frontend does not cancel the job.
 
 For sparse sampling, the displayed source position is the most recent requested
 sample timestamp. A continuous completion percentage would be misleading because

@@ -549,6 +549,11 @@ Do not require multi-hour video processing for ordinary unit tests.
 
 Keep test media small.
 
+Use short, small video fixtures for agent-run tests. Testing with 100 GB recordings
+is not a goal or a completion requirement; the user handles manual testing with
+large recordings. Do not repeatedly flag the absence of 100 GB tests as a
+limitation. Continue designing for long, large source videos as specified above.
+
 Do not commit large copyrighted gameplay recordings to the repository unless explicitly approved.
 
 Prefer:
