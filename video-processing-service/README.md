@@ -16,7 +16,35 @@ Install from this directory with `py -m pip install -e .` on Windows (or
 `python -m pip install -e .` elsewhere), then run `ycg-video`. The module can
 also run without installation; see the CMD example below.
 
-## Configuration
+## Local HTTP service
+
+The CLI works without web dependencies. To run the controller integration from
+this directory on Windows:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[api,test]"
+.\start-server.ps1
+```
+
+The server listens on `127.0.0.1:8090`; `YCG_VIDEO_PORT` overrides the port and
+`YCG_VIDEO_CONFIG` selects an optional TOML override file. The server reloads the
+configuration for each request. `GET /health` reports readiness and `/docs`
+exposes the generated API documentation.
+
+`POST /api/proxy` takes JSON `{gameName,inputVideo,outputVideo}` with a nonblank
+game title and absolute paths. It streams `application/x-ndjson` progress with
+`started`, `running`, `completed`, or `failed` states, plus heartbeat records.
+The start record includes the argument array `command` and display string
+`commandLine`. Existing outputs are rejected; a failed run publishes no partial
+proxy. Only one proxy runs at once (concurrent requests receive HTTP 409).
+The controller and Python process must have access to the same local source
+paths. No upload, input staging copy, or network share translation is performed.
+
+Run `.\.venv\Scripts\python.exe -m unittest discover -s tests -v` to include the
+HTTP adapter tests along with the CLI and FFmpeg tests.
+
+## FFmpeg configuration
 
 [`src/video_processing_service/config.toml`](src/video_processing_service/config.toml) contains the FFmpeg executable paths, acceleration mode, H.264 encoder,
 maximum proxy width and height, target bitrate, rate-control buffer, pixel format,
@@ -125,8 +153,8 @@ source time, source duration, frame count, FPS, and speed. Proxy events include
 percent complete; sampling events include the requested total frame count.
 The `started` event carries the exact FFmpeg argument tuple in `command`.
 Values FFmpeg has not reported yet are `None`. A `completed` event is sent only
-after the output is validated and published. This API can later feed controller
-progress events to the frontend.
+after the output is validated and published. The HTTP adapter forwards these
+events to the controller, which streams them to the frontend.
 
 ## Tests
 

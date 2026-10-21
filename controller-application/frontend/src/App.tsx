@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import type { DragEvent, FormEvent, ReactNode, SVGProps } from 'react'
 import { buildKnowledgeBase } from './knowledgeBaseApi'
+import { formatProgress, getProxyJob, startProxyJob, watchProxyJob } from './videoProcessingApi'
 import './App.css'
 
 type Action = 'knowledge' | 'chapters'
 type LogLevel = 'info' | 'success' | 'warning' | 'error'
-type LogEntry = { id: number; timestamp: Date; level: LogLevel; message: string }
-type VideoFile = { id: string; file: File }
+type LogEntry = { id: number; timestamp: Date; level: LogLevel; message: string; key?: string }
+type VideoFile = { id: string; file: { name: string; size: number }; path: string }
 
 const actionLabels: Record<Action, string> = {
   knowledge: 'Build Knowledge Base',
@@ -14,7 +15,7 @@ const actionLabels: Record<Action, string> = {
 }
 const videoExtensions = ['mp4', 'mkv', 'mov', 'avi', 'webm', 'm4v', 'mpeg', 'mpg', 'ts', 'mts', 'm2ts', 'wmv', 'flv']
 const videoAccept = ['video/*', ...videoExtensions.map(extension => `.${extension}`)].join(',')
-// Keep a long session's UI log bounded until persistent job logging is connected.
+// Keep the UI bounded; the backend retains the full processing event journal.
 const maxLogEntries = 500
 
 function Icon({ name, ...props }: { name: 'play' | 'book' | 'video' | 'upload' | 'close' | 'terminal' } & SVGProps<SVGSVGElement>) {
@@ -42,6 +43,9 @@ export default function App() {
   const [videos, setVideos] = useState<VideoFile[]>([])
   const [dragging, setDragging] = useState(false)
   const [isBuilding, setIsBuilding] = useState(false)
+  const [isProcessing, setIsProcessing] = useState(false)
+  const busy = isBuilding || isProcessing
+  const eventStream = useRef<EventSource | null>(null)
   const buildInFlight = useRef(false)
   const [logs, setLogs] = useState<LogEntry[]>(() => [
     { id: 0, timestamp: new Date(), level: 'info', message: 'Workspace ready. Enter a game name and choose an action.' },
@@ -70,9 +74,70 @@ export default function App() {
     }
   }, [logs])
 
-  function log(level: LogLevel, message: string) {
-    const entry = { id: nextLogId.current++, timestamp: new Date(), level, message }
-    setLogs(previous => [...previous, entry].slice(-maxLogEntries))
+  function log(level: LogLevel, message: string, key?: string) {
+    const entry = { id: nextLogId.current++, timestamp: new Date(), level, message, key }
+    setLogs(previous => {
+      if (key && previous.some(item => item.key === key)) {
+        return previous.map(item => item.key === key ? { ...entry, id: item.id } : item)
+      }
+      return [...previous, entry].slice(-maxLogEntries)
+    })
+  }
+
+  function followJob(id: string) {
+    eventStream.current?.close()
+    eventStream.current = watchProxyJob(id, event => {
+      const videoKey = `${id}:${event.videoIndex}`
+      if (event.commandLine) log('info', `FFmpeg command: ${event.commandLine}`, `${videoKey}:command`)
+      if (event.state === 'running') log('info', formatProgress(event), `${videoKey}:progress`)
+      else if (event.state === 'completed') log('success', `${event.videoName}: proxy ready — ${event.outputVideo}`, `${videoKey}:progress`)
+      else if (event.state === 'failed') log('error', `${event.videoName}: ${event.detail || event.message}`, `${videoKey}:progress`)
+      else log(event.state === 'job_failed' ? 'error' : event.state === 'job_completed' ? 'success' : 'info', event.message, `${id}:${event.id}`)
+      if (event.state === 'job_completed' || event.state === 'job_failed') {
+        eventStream.current?.close()
+        setIsProcessing(false)
+        buildInFlight.current = false
+      }
+    }, () => log('warning', 'Progress connection lost. Reconnecting; processing may still be running.', `${id}:connection`),
+    () => log('info', 'Connected to processing events.', `${id}:connection`))
+  }
+
+  useEffect(() => {
+    const id = localStorage.getItem('ycg.lastProxyJob')
+    let disposed = false
+    if (id) {
+      buildInFlight.current = true
+      setIsProcessing(true)
+      getProxyJob(id).then(job => {
+        if (disposed) return
+        setIsProcessing(job.state === 'running')
+        buildInFlight.current = job.state === 'running'
+        followJob(id)
+      }).catch(error => {
+        if (disposed) return
+        setIsProcessing(false)
+        buildInFlight.current = false
+        log('error', `Could not restore processing status: ${error.message}`)
+      })
+    }
+    return () => { disposed = true; eventStream.current?.close() }
+  }, [])
+
+  async function processVideos() {
+    const title = gameName.trim()
+    if (!title || videos.length === 0 || buildInFlight.current) return
+    buildInFlight.current = true
+    setIsProcessing(true)
+    log('info', `Starting proxy creation for "${title}" (${videos.length} videos).`)
+    try {
+      const job = await startProxyJob(title, videos.map(video => video.path))
+      localStorage.setItem('ycg.lastProxyJob', job.jobId)
+      followJob(job.jobId)
+    } catch (error) {
+      log('error', error instanceof Error ? error.message : 'Could not start proxy processing.')
+      setIsProcessing(false)
+      buildInFlight.current = false
+    }
   }
 
   function selectAction(value: Action) {
@@ -83,6 +148,11 @@ export default function App() {
   }
 
   function addVideos(files: FileList | File[]) {
+    if (buildInFlight.current) return
+    if (!window.ycgDesktop) {
+      log('error', 'Open the desktop application to select local video paths. Run the desktop launcher.')
+      return
+    }
     const next = [...videos]
     for (const file of Array.from(files)) {
       const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
@@ -94,15 +164,20 @@ export default function App() {
         log('warning', `Skipped "${file.name}": the file is empty.`)
         continue
       }
-      const id = JSON.stringify([file.name, file.size, file.lastModified])
+      const path = window.ycgDesktop.getPathForFile(file)
+      if (!path) {
+        log('error', `Cannot determine the local path of "${file.name}".`)
+        continue
+      }
+      const id = path
       if (next.some(video => video.id === id)) {
         log('warning', `Skipped "${file.name}": already selected.`)
         continue
       }
-      next.push({ id, file })
+      next.push({ id, path, file: { name: file.name, size: file.size } })
       log('success', `Added "${file.name}" (${formatSize(file.size)}).`)
     }
-    // Store references and metadata only; multi-hour recordings are never read here.
+    // Only paths and metadata cross the API; original recordings are read in place.
     setVideos(next)
   }
 
@@ -162,13 +237,13 @@ export default function App() {
             <div className="form-fields">
               <div className="field">
                 <label htmlFor="game-name">Game name</label>
-                <input id="game-name" name="gameName" placeholder="e.g. Mortal Shell" value={gameName} onChange={event => setGameName(event.target.value)} required maxLength={200} autoComplete="off" aria-describedby="game-hint" disabled={isBuilding} />
+                <input id="game-name" name="gameName" placeholder="e.g. Mortal Shell" value={gameName} onChange={event => setGameName(event.target.value)} required maxLength={200} autoComplete="off" aria-describedby="game-hint" disabled={busy} />
                 <p id="game-hint" className="field-hint">The game you want to work with.</p>
               </div>
               <div className="field">
                 <label htmlFor="action">Action</label>
                 <div className="select-wrapper">
-                  <select id="action" value={action} onChange={event => selectAction(event.target.value as Action)} disabled={isBuilding}>
+                  <select id="action" value={action} onChange={event => selectAction(event.target.value as Action)} disabled={busy}>
                     <option value="knowledge">Build Knowledge Base</option>
                     <option value="chapters">Build Chapters</option>
                   </select>
@@ -194,7 +269,7 @@ export default function App() {
                 </div>
                 <div className="action-footer">
                   <p role="status"><span className="status-dot muted" />{isBuilding ? 'Waiting for LM Studio…' : 'Results are validated and printed in the backend console.'}</p>
-                  <button className="primary-button" type="submit" disabled={!gameName.trim() || isBuilding}><Icon name="play" width="16" height="16" />{isBuilding ? 'Working…' : 'Start'}</button>
+                  <button className="primary-button" type="submit" disabled={!gameName.trim() || busy}><Icon name="play" width="16" height="16" />{isBuilding ? 'Working…' : 'Start'}</button>
                 </div>
               </div>
             ) : (
@@ -209,24 +284,24 @@ export default function App() {
                 >
                   <span className="upload-icon"><Icon name="upload" width="26" height="26" /></span>
                   <h4>{dragging ? 'Drop your videos here' : 'Drag & drop your gameplay here'}</h4>
-                  <p>or <label className="browse-button">browse files<input type="file" multiple accept={videoAccept} aria-label="Browse video files" onChange={event => { if (event.target.files) addVideos(event.target.files); event.target.value = '' }} /></label> to choose your recordings</p>
+                  <p>or <label className="browse-button">browse files<input type="file" multiple accept={videoAccept} disabled={busy} aria-label="Browse video files" onChange={event => { if (event.target.files) addVideos(event.target.files); event.target.value = '' }} /></label> to choose your recordings</p>
                   <span className="format-hint">MP4, MKV, MOV, WEBM and other video formats</span>
                 </div>
                 {videos.length > 0 && (
                   <ul className="video-list" aria-label="Selected videos">
-                    {videos.map(({ id, file }) => (
+                    {videos.map(({ id, file, path }) => (
                       <li key={id}>
                         <span className="file-icon"><Icon name="video" /></span>
-                        <div className="file-details"><span className="file-name" title={file.name}>{file.name}</span><span>{formatSize(file.size)}</span></div>
+                        <div className="file-details"><span className="file-name" title={path}>{file.name}</span><span>{formatSize(file.size)} · {path}</span></div>
                         <span className="file-status">Selected</span>
-                        <button className="icon-button" type="button" aria-label={`Remove ${file.name}`} onClick={() => { setVideos(previous => previous.filter(video => video.id !== id)); log('info', `Removed "${file.name}".`) }}><Icon name="close" width="16" height="16" /></button>
+                        <button className="icon-button" type="button" disabled={busy} aria-label={`Remove ${file.name}`} onClick={() => { setVideos(previous => previous.filter(video => video.id !== id)); log('info', `Removed "${file.name}".`) }}><Icon name="close" width="16" height="16" /></button>
                       </li>
                     ))}
                   </ul>
                 )}
                 <div className="action-footer video-footer">
-                  <p className="video-note"><span className="status-dot muted" />Files stay on your device. Processing is not connected yet.</p>
-                  <button className="primary-button" type="button" disabled={!gameName.trim() || videos.length === 0}><Icon name="play" width="16" height="16" />Process</button>
+                  <p className="video-note"><span className="status-dot muted" />{isProcessing ? 'Creating proxy videos. Follow progress in the activity log.' : 'Original files are read directly. No video uploads or source copies.'}</p>
+                  <button className="primary-button" type="button" onClick={processVideos} disabled={!gameName.trim() || videos.length === 0 || busy}><Icon name="play" width="16" height="16" />{isProcessing ? 'Processing…' : 'Process'}</button>
                 </div>
               </div>
             )}
@@ -247,7 +322,7 @@ export default function App() {
               </div>
             ))}
           </div>
-          <div className="log-footer"><span><span className="status-dot muted" />{isBuilding ? 'Knowledge acquisition in progress' : 'No active requests'}</span><span>Session activity · Latest {maxLogEntries} entries</span></div>
+          <div className="log-footer"><span><span className="status-dot muted" />{isProcessing ? 'Proxy processing in progress' : isBuilding ? 'Knowledge acquisition in progress' : 'No active requests'}</span><span>Session activity · Latest {maxLogEntries} entries</span></div>
         </section>
       </main>
       <footer className="app-footer"><span>PROJECT YCG</span><span>Built around your gameplay.</span></footer>

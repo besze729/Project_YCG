@@ -3,7 +3,8 @@
 Two independent projects:
 
 - `backend/`: Spring Boot application built with Maven and JDK 25.
-- `frontend/`: React and TypeScript application built with Vite and npm.
+- `frontend/`: React and TypeScript application built with Vite and npm, with an
+  Electron desktop launcher for native local file paths.
 
 The frontend provides an English workspace with a game name field, an action
 selector, and an activity log. Build Knowledge Base calls the Spring Boot backend,
@@ -22,20 +23,105 @@ Technology decisions are maintained in [the ADR directory](../docs/adr/).
 - **Build Chapters** shows a drop area and a keyboard-accessible file picker.
   Multiple videos can be selected, inspected by name and size, and removed.
   Selection accepts video MIME types or common video filename extensions;
-  actual media validation belongs to the future processing service. Empty files
-  and duplicates (same name, size, and last-modified timestamp) are skipped with
-  feedback. Selected files are retained when switching actions.
+  FFprobe validates the actual media. Empty files and duplicate paths are skipped.
+  Process is enabled only with a nonblank game name and at least one video. It
+  creates proxies through the controller and Python service. Inputs are locked
+  while processing. The list displays each selected file's absolute path.
 - The bottom **Activity log** displays timestamped information, success,
   warning, and error messages. It retains the latest 500
   entries, follows new entries unless the user has scrolled up, and can be
   cleared.
 
-Build Chapters remains UI-only. Videos are held as browser file references:
-their contents are not read, copied, or uploaded. Form values, file selection,
-and log entries are session-only and reset on page reload. Knowledge acquisition
-currently uses a synchronous HTTP request, without background jobs or SSE.
+The desktop window obtains original absolute paths from native file selections
+and drag and drop. Only paths are submitted; videos are never uploaded or copied.
+The regular browser remains useful for frontend development and knowledge-base
+requests, but cannot select video paths for processing. The last proxy job ID is
+saved locally so reopening the desktop window restores its event stream.
+Live progress updates replace the corresponding video's progress row, keeping
+the FFmpeg command visible without filling the log with per-second entries.
+
+## Run the desktop processing workflow
+
+First install the frontend dependencies with `npm ci` in `frontend/` and the
+Python HTTP dependencies following the video service README. From the repository
+root, run these in separate terminals:
+
+```powershell
+# Python service on 127.0.0.1:8090
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\video-processing-service\start-server.ps1
+
+# Controller on 127.0.0.1:8080; no LM Studio token is needed for proxy creation
+mvn -f .\controller-application\backend\pom.xml spring-boot:run
+
+# Build and open the native desktop window
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\controller-application\start-desktop.ps1
+```
+
+The existing token-aware backend launcher may also be used. Electron downloads
+its runtime on first launch. The desktop launcher builds the UI before opening;
+it uses the same local Node fallback as `start-frontend.ps1`. Java, Python, and
+FFmpeg remain separately installed local processes; an all-in-one installer is
+not provided yet. `YCG_CONTROLLER_URL` can override the desktop's loopback HTTP
+controller address (default `http://127.0.0.1:8080`).
 
 ## Backend
+
+### Proxy processing contract
+
+`POST /api/chapters/jobs` accepts JSON:
+
+```json
+{"gameName":"Mortal Shell","videos":["F:\\Gameplay\\Mortal Shell\\part01.mp4"]}
+```
+
+The controller trims and validates the game name (1–200 characters), requires
+at least one absolute path to a readable nonempty file, and rejects duplicate
+canonical paths. It passes the original resolved paths to Python. No filename
+matching, configured input directory, upload, or source copy is involved.
+The desktop and both services run on the same machine with access to these files.
+
+An accepted request returns HTTP 202 with `jobId`, `state`, `gameName`, and the
+planned `videos` (including `outputPath`). `GET /api/chapters/jobs/{jobId}` returns
+the current snapshot. `GET /api/chapters/jobs/{jobId}/events` is an SSE stream with
+numbered `processing` events and `Last-Event-ID` replay. Events contain `state`,
+`message`, `jobId`, and, for video events, `videoIndex`, `videoName`, and the
+Python progress fields (`fps`, `speed`, `source_seconds`, `duration_seconds`,
+`frame_count`, `percent`, `command`, `commandLine`). Video states are `started`,
+`running`, `completed`, and `failed`; batch states are `job_started`,
+`job_completed`, and `job_failed`. A lost event connection does not start another job.
+
+One batch runs at a time, with videos processed sequentially. A failed video
+stops the batch; earlier completed proxies are retained. Commands and events are
+saved alongside the proxies in `YCG_PROXY_OUTPUT_ROOT/<jobId>/`. Reloading the
+page reconnects to the last job. Controller restarts mark unfinished jobs as
+interrupted when accessed; they do not restart encoding automatically.
+
+The controller calls the Python service with `POST /api/proxy`, sending JSON
+`{gameName,inputVideo,outputVideo}` using absolute local paths. Python responds
+with `application/x-ndjson`, one progress object per line, plus idle heartbeats.
+The controller relays these through SSE. The `command` array is the actual
+process argument list; `commandLine` is its platform-specific display form.
+Completion is sent only after the proxy is published. Unexpected EOF and an
+unreachable Python service become failed job events.
+
+Configuration: `YCG_VIDEO_SERVICE_URL` defaults to `http://127.0.0.1:8090` and
+`YCG_PROXY_OUTPUT_ROOT` to `./data/proxy-jobs` relative to the backend working
+directory. `YCG_VIDEO_CONNECT_TIMEOUT` defaults to `3s` and
+`YCG_VIDEO_IDLE_TIMEOUT` to `60s` (stream inactivity, not total encoding time).
+Both services bind to loopback. The Python server reads `YCG_VIDEO_CONFIG` as an
+optional TOML override file on each proxy request.
+
+Validation errors return HTTP 400, unreadable or missing sources 404,
+a busy controller 409, and local storage failures 500. Errors contain
+`code` and `message`. Once a job is accepted, processing errors are reported in
+its event stream and snapshot.
+
+After `mvn package` in `backend/`, run `npm run test:integration` in `frontend/`
+to launch isolated Java/Python services on ports 18080/18090 and a hidden Electron
+window. This creates two short synthetic videos, selects their real native paths,
+clicks Process, verifies event replay after reload, checks the H.264/480p proxies
+and their duration, and confirms that the source files are unchanged. Generated
+fixtures and logs stay under the ignored `controller-application/.cache/` folder.
 
 Install JDK 25 and Maven, set `JAVA_HOME` to the JDK directory, and make `mvn`
 available on `PATH`.
@@ -146,7 +232,7 @@ model in LM Studio. Protocol details:
 
 ## Frontend
 
-Use Node.js 22.12+ (or 20.19+) with npm, consistent with `package.json`.
+Use Node.js 22.12+ with npm, consistent with Electron and `package.json`.
 From `controller-application/frontend`:
 
 ```powershell

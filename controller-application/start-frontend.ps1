@@ -1,3 +1,5 @@
+param([switch]$Desktop)
+
 $ErrorActionPreference = 'Stop'
 
 $frontendDirectory = Join-Path $PSScriptRoot 'frontend'
@@ -28,7 +30,7 @@ try {
         # npm scripts also need to find node.exe when launching Vite.
         $env:PATH = $localNodeDirectory.FullName + ';' + $originalPath
     }
-    & $npmPath run dev
+    if ($Desktop) { & $npmPath run desktop } else { & $npmPath run dev }
     if ($LASTEXITCODE -ne 0) {
         throw "Frontend exited with code $LASTEXITCODE."
     }

@@ -93,7 +93,7 @@ h4 { font-size: 14px; font-weight: 550; }
 .video-list { list-style: none; margin: 14px 0 0; padding: 0; max-height: 210px; overflow-y: auto; }
 .video-list li { display: flex; gap: 12px; align-items: center; border-bottom: 1px solid var(--border); padding: 12px 4px; }
 .file-icon { color: #95aaa9; }
-.file-details { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; font-size: 11px; color: var(--muted); }
+.file-details { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
 .file-name { color: #d7e0e7; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-status { color: #9fb2ab; font-size: 10px; }
 .icon-button { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid transparent; border-radius: 5px; color: var(--muted); background: transparent; }
