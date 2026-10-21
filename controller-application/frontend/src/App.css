@@ -112,6 +112,8 @@ h4 { font-size: 14px; font-weight: 550; }
 .log-level.info { color: #8ebce4; }
 .log-level.success { color: var(--accent); }
 .log-level.warning { color: #e6bc7c; }
+.log-level.error { color: #f2a4a4; }
+.field input:disabled, .field select:disabled { opacity: .6; cursor: wait; }
 .log-message { color: #bdc7d2; overflow-wrap: anywhere; }
 .log-empty { color: var(--muted); font-size: 12px; padding-top: 6px; }
 .log-footer { display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid var(--border); padding: 10px 22px; color: #8f9dac; font-size: 10px; }
