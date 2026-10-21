@@ -154,6 +154,20 @@ npm ci
 npm run dev
 ```
 
+After installing dependencies, the frontend can also be started from the
+repository root with:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\controller-application\start-frontend.ps1
+```
+
+The launcher uses `npm.cmd` from PATH when available. Otherwise it selects the
+newest local Node.js version under `.tools/node-v*-win-x64`, adding that directory
+to PATH only while the frontend runs. The existing local distribution can be
+used without a system-wide Node.js installation. Dependencies must already be
+installed; with the local distribution, run its `npm.cmd ci` from `frontend/`
+with its directory added to the current shell's PATH first.
+
 Open `http://127.0.0.1:5173`.
 
 Run the backend alongside the frontend. Vite proxies `/api` requests to
