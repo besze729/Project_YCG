@@ -84,7 +84,7 @@ export default function App() {
     })
   }
 
-  function followJob(id: string) {
+  function followJob(id: string, resumed = false) {
     eventStream.current?.close()
     eventStream.current = watchProxyJob(id, event => {
       const videoKey = `${id}:${event.videoIndex}`
@@ -92,9 +92,12 @@ export default function App() {
       if (event.state === 'running') log('info', formatProgress(event), `${videoKey}:progress`)
       else if (event.state === 'completed') log('success', `${event.videoName}: proxy ready — ${event.outputVideo}`, `${videoKey}:progress`)
       else if (event.state === 'failed') log('error', `${event.videoName}: ${event.detail || event.message}`, `${videoKey}:progress`)
-      else log(event.state === 'job_failed' ? 'error' : event.state === 'job_completed' ? 'success' : 'info', event.message, `${id}:${event.id}`)
+      else if (event.state !== 'job_started' || !resumed) {
+        log(event.state === 'job_failed' ? 'error' : event.state === 'job_completed' ? 'success' : 'info', event.message, `${id}:${event.id}`)
+      }
       if (event.state === 'job_completed' || event.state === 'job_failed') {
         eventStream.current?.close()
+        localStorage.removeItem('ycg.lastProxyJob')
         setIsProcessing(false)
         buildInFlight.current = false
       }
@@ -103,16 +106,27 @@ export default function App() {
   }
 
   useEffect(() => {
-    const id = localStorage.getItem('ycg.lastProxyJob')
+    const currentSessionId = sessionStorage.getItem('ycg.currentProxyJob')
+    const id = currentSessionId || localStorage.getItem('ycg.lastProxyJob')
     let disposed = false
     if (id) {
       buildInFlight.current = true
       setIsProcessing(true)
       getProxyJob(id).then(job => {
         if (disposed) return
+        if (!currentSessionId && job.state !== 'running') {
+          localStorage.removeItem('ycg.lastProxyJob')
+          setIsProcessing(false)
+          buildInFlight.current = false
+          return
+        }
+        if (!currentSessionId) {
+          sessionStorage.setItem('ycg.currentProxyJob', id)
+          log('info', `Resuming an earlier proxy job for "${job.gameName}".`)
+        }
         setIsProcessing(job.state === 'running')
         buildInFlight.current = job.state === 'running'
-        followJob(id)
+        followJob(id, !currentSessionId)
       }).catch(error => {
         if (disposed) return
         setIsProcessing(false)
@@ -132,6 +146,7 @@ export default function App() {
     try {
       const job = await startProxyJob(title, videos.map(video => video.path))
       localStorage.setItem('ycg.lastProxyJob', job.jobId)
+      sessionStorage.setItem('ycg.currentProxyJob', job.jobId)
       followJob(job.jobId)
     } catch (error) {
       log('error', error instanceof Error ? error.message : 'Could not start proxy processing.')

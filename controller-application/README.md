@@ -35,8 +35,9 @@ Technology decisions are maintained in [the ADR directory](../docs/adr/).
 The desktop window obtains original absolute paths from native file selections
 and drag and drop. Only paths are submitted; videos are never uploaded or copied.
 The regular browser remains useful for frontend development and knowledge-base
-requests, but cannot select video paths for processing. The last proxy job ID is
-saved locally so reopening the desktop window restores its event stream.
+requests, but cannot select video paths for processing. Reloading the current
+window restores its job events. A newly opened desktop window follows an earlier
+job only if it is still running; it does not replay completed or failed jobs.
 Live progress updates replace the corresponding video's progress row, keeping
 the FFmpeg command visible without filling the log with per-second entries.
 
@@ -93,7 +94,7 @@ Python progress fields (`fps`, `speed`, `source_seconds`, `duration_seconds`,
 One batch runs at a time, with videos processed sequentially. A failed video
 stops the batch; earlier completed proxies are retained. Commands and events are
 saved alongside the proxies in `YCG_PROXY_OUTPUT_ROOT/<jobId>/`. Reloading the
-page reconnects to the last job. Controller restarts mark unfinished jobs as
+current page reconnects to its job. Controller restarts mark unfinished jobs as
 interrupted when accessed; they do not restart encoding automatically.
 
 The controller calls the Python service with `POST /api/proxy`, sending JSON

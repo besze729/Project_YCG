@@ -13,13 +13,13 @@ app.whenReady().then(async () => {
   const window = createWindow({ show: false })
   const wc = window.webContents
   const evaluate = code => wc.executeJavaScript(code)
-  const waitFor = async code => {
+  const waitFor = async (code, target = wc) => {
     const until = Date.now() + 60000
     while (Date.now() < until) {
-      if (await evaluate(code)) return
+      if (await target.executeJavaScript(code)) return
       await new Promise(resolve => setTimeout(resolve, 100))
     }
-    throw new Error('UI condition timed out: ' + code + '\n' + await evaluate('document.body.innerText'))
+    throw new Error('UI condition timed out: ' + code + '\n' + await target.executeJavaScript('document.body.innerText'))
   }
   try {
     await waitFor('!!document.querySelector("#action")')
@@ -53,10 +53,21 @@ app.whenReady().then(async () => {
     wc.reload()
     await waitFor(`document.body.innerText.includes('All proxy videos are ready.')`)
     assert.equal(((await evaluate('document.body.innerText')).match(/FFmpeg command:/g) || []).length, 2)
+    // An old persisted job must not replay its start/failure when the app opens anew.
+    const oldJobId = await evaluate(`sessionStorage.getItem('ycg.currentProxyJob')`)
+    await evaluate(`localStorage.setItem('ycg.lastProxyJob', sessionStorage.getItem('ycg.currentProxyJob'))`)
+    const fresh = createWindow({ show: false })
+    await waitFor(`!!document.querySelector('#action') && localStorage.getItem('ycg.lastProxyJob') === null`, fresh.webContents)
+    const freshText = await fresh.webContents.executeJavaScript('document.body.innerText')
+    assert.ok(oldJobId)
+    assert.ok(freshText.includes('Workspace ready.'))
+    assert.ok(!freshText.includes('Proxy processing started.'))
+    assert.ok(!freshText.includes('All proxy videos are ready.'))
+    fresh.close()
     if (process.env.YCG_SMOKE_SCREENSHOT) {
       await fs.writeFile(process.env.YCG_SMOKE_SCREENSHOT, (await wc.capturePage()).toPNG())
     }
-    console.log('DESKTOP_SMOKE_OK: native paths, button validation, file removal/drop, two proxies, command log, reload replay')
+    console.log('DESKTOP_SMOKE_OK: native paths, button validation, two proxies, reload replay, no stale job on fresh launch')
     app.exit(0)
   } catch (error) {
     console.error(error)
