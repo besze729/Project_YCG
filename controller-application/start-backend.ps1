@@ -1,5 +1,4 @@
 $ErrorActionPreference = 'Stop'
-
 $tokenPath = Join-Path $env:LOCALAPPDATA 'ProjectYCG\lmstudio-token.dpapi'
 $backendPom = Join-Path $PSScriptRoot 'backend\pom.xml'
 
@@ -15,7 +14,10 @@ try {
 
 try {
     $env:LM_STUDIO_API_TOKEN = [System.Net.NetworkCredential]::new('', $secureToken).Password
-    & mvn -f $backendPom spring-boot:run
+    [Console]::Out.WriteLine("[$((Get-Date).ToString('HH:mm:ss.fff'))] Launching Maven")
+    & mvn -f $backendPom spring-boot:run | ForEach-Object {
+        [Console]::Out.WriteLine("[$((Get-Date).ToString('HH:mm:ss.fff'))] $_")
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Backend exited with code $LASTEXITCODE."
     }
