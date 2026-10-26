@@ -1,6 +1,8 @@
 package hu.projectycg.controller.video;
 
 import jakarta.annotation.PreDestroy;
+import hu.projectycg.controller.knowledge.KnowledgeBaseLookup;
+import hu.projectycg.controller.knowledge.KnowledgeBaseException;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -30,6 +32,7 @@ import tools.jackson.databind.node.ObjectNode;
 @Service
 public class ProxyJobs {
     private final VideoProcessingClient client;
+    private final KnowledgeBaseLookup knowledgeBase;
     private final Path root;
     private final BigDecimal samplingIntervalSeconds;
     private final JsonMapper mapper = JsonMapper.builder().build();
@@ -37,8 +40,9 @@ public class ProxyJobs {
     private final AtomicBoolean busy = new AtomicBoolean();
     private final java.util.concurrent.ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
 
-    public ProxyJobs(VideoProcessingClient client, VideoProcessingProperties properties) {
+    public ProxyJobs(VideoProcessingClient client, VideoProcessingProperties properties, KnowledgeBaseLookup knowledgeBase) {
         this.client = client;
+        this.knowledgeBase = knowledgeBase;
         root = properties.outputRoot().toAbsolutePath().normalize();
         samplingIntervalSeconds = properties.samplingIntervalSeconds();
     }
@@ -120,6 +124,11 @@ public class ProxyJobs {
                 || request.path("gameName").asString().strip().length() > 200
                 || !request.path("videos").isArray() || request.path("videos").isEmpty()) {
             throw error(HttpStatus.BAD_REQUEST, "A nonblank gameName (max 200 characters) and at least one video path are required.");
+        }
+        String gameName = request.path("gameName").asString().strip();
+        if (!knowledgeBase.exists(gameName)) {
+            throw new KnowledgeBaseException(KnowledgeBaseException.Code.MISSING_KNOWLEDGE_BASE,
+                    "No knowledge base exists for \"" + gameName + "\". Run Build Knowledge Base successfully before processing videos.");
         }
         var sources = new ArrayList<Path>();
         var seen = new HashSet<Path>();

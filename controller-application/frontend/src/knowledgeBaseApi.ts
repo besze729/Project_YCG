@@ -1,15 +1,16 @@
 type BuildResult = {
   status: 'completed' | 'already_exists'
   message: string
+  outputPath: string
 }
 
-export async function buildKnowledgeBase(gameName: string): Promise<BuildResult> {
+export async function buildKnowledgeBase(gameName: string, overwrite = false): Promise<BuildResult> {
   let response: Response
   try {
     response = await fetch('/api/knowledge-base/build', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ gameName }),
+      body: JSON.stringify({ gameName, overwrite }),
     })
   } catch {
     throw new Error('Could not reach the controller backend. Check that it is running. The request may not have completed.')
@@ -28,5 +29,8 @@ export async function buildKnowledgeBase(gameName: string): Promise<BuildResult>
   if (!('status' in body) || (body.status !== 'completed' && body.status !== 'already_exists')) {
     throw new Error('The controller returned an unknown result.')
   }
-  return { status: body.status, message: body.message }
+  if (!('outputPath' in body) || typeof body.outputPath !== 'string' || !body.outputPath) {
+    throw new Error('The controller did not return the knowledge-base file path.')
+  }
+  return { status: body.status, message: body.message, outputPath: body.outputPath }
 }

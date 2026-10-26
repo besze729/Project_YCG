@@ -2,7 +2,8 @@ package hu.projectycg.controller.knowledge;
 
 public class KnowledgeBaseException extends RuntimeException {
     public enum Code {
-        INVALID_REQUEST, AI_UNAVAILABLE, AI_TIMEOUT, AI_HTTP_ERROR, INVALID_AI_RESPONSE, PROMPT_ERROR
+        INVALID_REQUEST, AI_UNAVAILABLE, AI_TIMEOUT, AI_HTTP_ERROR, INVALID_AI_RESPONSE, PROMPT_ERROR,
+        STORAGE_ERROR, BUSY, MISSING_KNOWLEDGE_BASE
     }
 
     private final Code code;

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import net from 'node:net'
+import http from 'node:http'
 import assert from 'node:assert/strict'
 import electronPath from 'electron'
 
@@ -34,7 +35,19 @@ const waitFor = async url => {
   throw new Error('Service did not start: ' + url)
 }
 const hash = async file => createHash('sha256').update(await readFile(file)).digest('hex')
+let knowledgeCalls = 0
+const knowledgeServer = http.createServer(async (request, response) => {
+  if (request.url !== '/api/v1/chat' || request.method !== 'POST') {
+    response.writeHead(501).end(); return
+  }
+  for await (const chunk of request) { /* consume the real LM Studio client request */ }
+  knowledgeCalls++
+  const content = JSON.stringify({ bosses: [{ displayName: `Test boss ${knowledgeCalls}`, classification: null }], sources: [] })
+  response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+  response.end(`event: chat.end\ndata: ${JSON.stringify({ type: 'chat.end', result: { output: [{ type: 'message', content }] } })}\n\n`)
+})
 try {
+  await new Promise(resolve => knowledgeServer.listen(0, '127.0.0.1', resolve))
   await available(18080); await available(18090)
   const sources = [path.join(work, 'árvíz game 1.mp4'), path.join(work, 'game 2.mp4')]
   for (const source of sources) execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i',
@@ -48,12 +61,15 @@ try {
   })
   start('java', ['-jar', path.join(software, 'controller-application/backend/target/controller-backend-0.0.1-SNAPSHOT.jar')], {
     SERVER_PORT: '18080', YCG_VIDEO_SERVICE_URL: 'http://127.0.0.1:18090', YCG_PROXY_OUTPUT_ROOT: path.join(work, 'jobs'),
+    YCG_KNOWLEDGE_BASE_OUTPUT_ROOT: path.join(work, 'knowledge-base'),
+    LM_STUDIO_BASE_URL: `http://127.0.0.1:${knowledgeServer.address().port}`, LM_STUDIO_API_TOKEN: '',
   })
   await Promise.all([waitFor('http://127.0.0.1:18090/health'), waitFor('http://127.0.0.1:18080/api/chapters/jobs/not-a-job')])
   const electron = start(electronPath, [path.join(frontend, 'desktop/smoke.cjs')], {
     YCG_CONTROLLER_URL: 'http://127.0.0.1:18080', YCG_SMOKE_PROFILE: path.join(work, 'electron-profile'),
     YCG_SMOKE_VIDEOS: JSON.stringify(sources), YCG_SMOKE_BAD_VIDEO: badSource,
     YCG_SMOKE_SCREENSHOT: path.join(work, 'desktop.png'),
+    YCG_SMOKE_KNOWLEDGE_PATH: path.join(work, 'knowledge-base', 'Smoke game.json'),
   })
   const code = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => { electron.kill(); reject(new Error('Desktop smoke timed out')) }, 90000)
@@ -61,6 +77,9 @@ try {
     electron.once('error', error => { clearTimeout(timer); reject(error) })
   })
   assert.equal(code, 0)
+  assert.equal(knowledgeCalls, 2, 'Cancellation must not invoke AI; confirmed rebuild must invoke it once')
+  const knowledge = JSON.parse(await readFile(path.join(work, 'knowledge-base', 'Smoke game.json'), 'utf8'))
+  assert.equal(knowledge.bosses[0].displayName, 'Test boss 2')
   const ids = await readdir(path.join(work, 'jobs'))
   assert.equal(ids.length, 2)
   const snapshots = await Promise.all(ids.map(async id => ({
@@ -107,12 +126,13 @@ try {
   const failureEvents = (await readFile(path.join(work, 'jobs', failed.id, 'events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse)
   assert.equal(failureEvents.filter(event => event.state === 'failed').length, 1)
   assert.equal(failureEvents.at(-1).state, 'job_failed')
-  console.log('LIVE_INTEGRATION_OK: timestamped JPEG sets, sequential stages, and one visible error for a failed job')
+  console.log('LIVE_INTEGRATION_OK: knowledge save/path/cancel/rebuild, missing-knowledge gate, timestamped JPEGs, replay and failure reporting')
   console.log('Artifacts: ' + work)
 } catch (error) {
   console.error(logs.join(''))
   throw error
 } finally {
+  knowledgeServer.close()
   for (const child of children) if (child.exitCode === null) child.kill()
   await writeFile(path.join(work, 'services.log'), logs.join(''))
 }

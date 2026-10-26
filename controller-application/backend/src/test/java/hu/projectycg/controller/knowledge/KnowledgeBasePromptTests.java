@@ -30,9 +30,4 @@ class KnowledgeBasePromptTests {
                 .isInstanceOf(KnowledgeBaseException.class).hasMessageContaining("UNKNOWN");
     }
 
-    @Test
-    void lookupRemainsAnExplicitFalseStub() {
-        assertThat(new KnowledgeBaseLookup().exists("Mortal Shell")).isFalse();
-        assertThat(new KnowledgeBaseLookup().exists("Another game")).isFalse();
-    }
 }

@@ -1,6 +1,8 @@
 package hu.projectycg.controller.video;
 
 import java.io.IOException;
+import hu.projectycg.controller.knowledge.KnowledgeBaseException;
+import java.util.Locale;
 import java.util.Map;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -40,5 +42,16 @@ public class ProxyController {
     @ExceptionHandler(IOException.class)
     ResponseEntity<Map<String, String>> ioError(IOException ex) {
         return ResponseEntity.internalServerError().body(Map.of("code", "io_error", "message", "Local file access failed: " + ex.getMessage()));
+    }
+
+    @ExceptionHandler(KnowledgeBaseException.class)
+    ResponseEntity<Map<String, String>> knowledgeError(KnowledgeBaseException ex) {
+        int status = switch (ex.code()) {
+            case INVALID_REQUEST -> 400;
+            case MISSING_KNOWLEDGE_BASE -> 409;
+            default -> 500;
+        };
+        return ResponseEntity.status(status).body(Map.of(
+                "code", ex.code().name().toLowerCase(Locale.ROOT), "message", ex.getMessage()));
     }
 }

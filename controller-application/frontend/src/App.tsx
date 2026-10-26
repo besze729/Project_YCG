@@ -44,6 +44,10 @@ export default function App() {
   const [dragging, setDragging] = useState(false)
   const [isBuilding, setIsBuilding] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [overwritePrompt, setOverwritePrompt] = useState<{
+    title: string; path: string; resolve: (confirmed: boolean) => void
+  } | null>(null)
+  const overwriteDialog = useRef<HTMLDialogElement>(null)
   const busy = isBuilding || isProcessing
   const eventStream = useRef<EventSource | null>(null)
   const buildInFlight = useRef(false)
@@ -54,6 +58,16 @@ export default function App() {
   const dragDepth = useRef(0)
   const logPanel = useRef<HTMLDivElement>(null)
   const followLogs = useRef(true)
+
+  useEffect(() => {
+    if (overwritePrompt) overwriteDialog.current?.showModal()
+  }, [overwritePrompt])
+
+  function confirmOverwrite(confirmed: boolean) {
+    overwriteDialog.current?.close()
+    overwritePrompt?.resolve(confirmed)
+    setOverwritePrompt(null)
+  }
 
   useEffect(() => {
     // A file dropped outside the picker must not navigate away from the workspace.
@@ -143,7 +157,7 @@ export default function App() {
     if (!title || videos.length === 0 || buildInFlight.current) return
     buildInFlight.current = true
     setIsProcessing(true)
-    log('info', `Starting proxy creation and frame sampling for "${title}" (${videos.length} videos).`)
+    log('info', `Checking prerequisites for "${title}" (${videos.length} videos).`)
     try {
       const job = await startProxyJob(title, videos.map(video => video.path))
       localStorage.setItem('ycg.lastProxyJob', job.jobId)
@@ -210,10 +224,21 @@ export default function App() {
     if (action !== 'knowledge' || !requestedGame || buildInFlight.current) return
     buildInFlight.current = true
     setIsBuilding(true)
-    log('info', `Requesting game knowledge for "${requestedGame}". Waiting for LM Studio; this may take several minutes.`)
+    log('info', `Requesting knowledge-base build for "${requestedGame}". This may take several minutes.`)
     try {
-      const result = await buildKnowledgeBase(requestedGame)
-      log(result.status === 'already_exists' ? 'info' : 'success', `${requestedGame}: ${result.message}`)
+      let result = await buildKnowledgeBase(requestedGame)
+      if (result.status === 'already_exists') {
+        const confirmed = await new Promise<boolean>(resolve => {
+          setOverwritePrompt({ title: requestedGame, path: result.outputPath, resolve })
+        })
+        if (!confirmed) {
+          log('info', `${requestedGame}: rebuild cancelled. Existing knowledge base unchanged.`)
+          return
+        }
+        log('info', `Rebuilding knowledge base for "${requestedGame}". Waiting for LM Studio.`)
+        result = await buildKnowledgeBase(requestedGame, true)
+      }
+      log(result.status === 'completed' ? 'success' : 'warning', `${requestedGame}: ${result.message} File: ${result.outputPath}`)
     } catch (error) {
       log('error', `${requestedGame}: ${error instanceof Error ? error.message : 'Knowledge-base acquisition failed.'}`)
     } finally {
@@ -224,6 +249,18 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <dialog className="overwrite-dialog" ref={overwriteDialog} aria-labelledby="overwrite-title"
+        onCancel={event => { event.preventDefault(); confirmOverwrite(false) }}>
+        <h2 id="overwrite-title">Rebuild knowledge base?</h2>
+        <p>A knowledge base already exists for "{overwritePrompt?.title}".</p>
+        <p className="knowledge-path">{overwritePrompt?.path}</p>
+        <p>Rebuilding invalidates the existing knowledge base immediately and replaces it when successful.
+          If the build fails, you must rebuild successfully before processing videos.</p>
+        <div className="dialog-actions">
+          <button className="text-button" type="button" autoFocus onClick={() => confirmOverwrite(false)}>Cancel</button>
+          <button className="primary-button" type="button" onClick={() => confirmOverwrite(true)}>Rebuild</button>
+        </div>
+      </dialog>
       <header className="app-header">
         <a className="brand" href="./" aria-label="Project YCG home">
           <span className="brand-mark"><span /><span /><span /></span>
@@ -284,7 +321,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="action-footer">
-                  <p role="status"><span className="status-dot muted" />{isBuilding ? 'Waiting for LM Studio…' : 'Results are validated and printed in the backend console.'}</p>
+                  <p role="status"><span className="status-dot muted" />{isBuilding ? 'Knowledge-base request in progress…' : 'Results are saved as JSON. See the activity log for the file path.'}</p>
                   <button className="primary-button" type="submit" disabled={!gameName.trim() || busy}><Icon name="play" width="16" height="16" />{isBuilding ? 'Working…' : 'Start'}</button>
                 </div>
               </div>

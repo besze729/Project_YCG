@@ -6,13 +6,18 @@ import hu.projectycg.controller.lmstudio.LmStudioProperties;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -31,6 +36,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @ExtendWith(OutputCaptureExtension.class)
 class KnowledgeBaseEndpointTests {
+    @TempDir Path temp;
+    private KnowledgeBaseLookup lookup;
     private static final String PATH = "/api/knowledge-base/build";
     private final JsonMapper mapper = new JsonMapper();
     private final AtomicInteger calls = new AtomicInteger();
@@ -41,6 +48,8 @@ class KnowledgeBaseEndpointTests {
     private volatile int upstreamStatus = 200;
     private volatile String upstreamBody;
     private volatile long delayMillis;
+    private volatile CountDownLatch responseRelease;
+    private final CountDownLatch upstreamEntered = new CountDownLatch(1);
     private volatile JsonNode receivedBody;
     private volatile String receivedAuthorization;
     private volatile String receivedAccept;
@@ -59,6 +68,8 @@ class KnowledgeBaseEndpointTests {
             receivedAccept = exchange.getRequestHeaders().getFirst("Accept");
             receivedBody = mapper.readTree(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             try {
+                upstreamEntered.countDown();
+                if (responseRelease != null) responseRelease.await(5, TimeUnit.SECONDS);
                 Thread.sleep(delayMillis);
                 byte[] bytes = upstreamBody.getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
@@ -72,11 +83,13 @@ class KnowledgeBaseEndpointTests {
         });
         server.start();
         baseUrl = URI.create("http://127.0.0.1:" + server.getAddress().getPort());
-        mvc = mvc(new KnowledgeBaseLookup(), Duration.ofSeconds(3));
+        lookup = new KnowledgeBaseLookup(temp.resolve("knowledge-base"));
+        mvc = mvc(lookup, Duration.ofSeconds(3));
     }
 
     @AfterEach
     void tearDown() {
+        if (responseRelease != null) responseRelease.countDown();
         server.stop(0);
         executor.shutdownNow();
     }
@@ -102,10 +115,11 @@ class KnowledgeBaseEndpointTests {
     }
 
     @Test
-    void sendsTheRenderedPromptAndPrintsOnlyValidatedJson(CapturedOutput output) throws Exception {
+    void sendsTheRenderedPromptAndSavesOnlyValidatedJson(CapturedOutput output) throws Exception {
         mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON).content("{\"gameName\":\" Mortal Shell \"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("completed"));
+                .andExpect(jsonPath("$.status").value("completed"))
+                .andExpect(jsonPath("$.outputPath").value(lookup.pathFor("Mortal Shell").toString()));
         assertThat(receivedMethod).isEqualTo("POST");
         assertThat(receivedAuthorization).isEqualTo("Bearer test-token");
         assertThat(receivedAccept).isEqualTo("text/event-stream");
@@ -116,22 +130,20 @@ class KnowledgeBaseEndpointTests {
         assertThat(receivedBody.path("stream").asBoolean()).isTrue();
         assertThat(receivedBody.path("store").asBoolean()).isFalse();
         assertThat(receivedBody.path("integrations").get(0).asString()).isEqualTo("mcp/test-search");
-        assertThat(output).contains("Validated knowledge-base response:", "\"displayName\" : \"Grisha\"");
+        assertThat(Files.readString(lookup.pathFor("Mortal Shell"))).contains("\"displayName\" : \"Grisha\"");
+        assertThat(output).doesNotContain("Validated knowledge-base response:", "\"displayName\" : \"Grisha\"");
     }
 
     @Test
     void returnsAlreadyExistsWithoutCallingTheModel(CapturedOutput output) throws Exception {
-        mvc = mvc(new KnowledgeBaseLookup() {
-            @Override
-            public boolean exists(String gameName) {
-                return true;
-            }
-        }, Duration.ofSeconds(3));
+        lookup.save("Mortal Shell", mapper.readTree("{\"bosses\":[],\"sources\":[]}"));
+        String previous = Files.readString(lookup.pathFor("Mortal Shell"));
         mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON).content("{\"gameName\":\"Mortal Shell\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("already_exists"))
                 .andExpect(jsonPath("$.message").value("Knowledge base already exists"));
         assertThat(calls.get()).isZero();
+        assertThat(Files.readString(lookup.pathFor("Mortal Shell"))).isEqualTo(previous);
         assertThat(output).doesNotContain("Validated knowledge-base response:");
     }
 
@@ -255,9 +267,69 @@ class KnowledgeBaseEndpointTests {
     @Test
     void reportsARequestTimeout() throws Exception {
         delayMillis = 1000;
-        mvc = mvc(new KnowledgeBaseLookup(), Duration.ofMillis(100));
+        mvc = mvc(lookup, Duration.ofMillis(100));
         mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON).content("{\"gameName\":\"Game\"}"))
                 .andExpect(status().isGatewayTimeout())
                 .andExpect(jsonPath("$.code").value("ai_timeout"));
+    }
+
+    @Test
+    void confirmedRebuildReplacesThePreviousFile() throws Exception {
+        lookup.save("Mortal Shell", mapper.readTree("{\"bosses\":[],\"sources\":[]}"));
+        mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameName\":\"Mortal Shell\",\"overwrite\":true}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("completed"));
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(Files.readString(lookup.pathFor("Mortal Shell"))).contains("Grisha");
+        try (var files = Files.list(temp.resolve("knowledge-base"))) {
+            assertThat(files.toList()).containsExactly(lookup.pathFor("Mortal Shell"));
+        }
+    }
+
+    @Test
+    void failedRebuildInvalidatesTheOldKnowledgeBase() throws Exception {
+        lookup.save("Game", mapper.readTree("{\"bosses\":[],\"sources\":[]}"));
+        upstreamBody = envelope("invalid");
+        mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameName\":\"Game\",\"overwrite\":true}"))
+                .andExpect(status().isBadGateway());
+        assertThat(lookup.exists("Game")).isFalse();
+        upstreamBody = envelope("{\"bosses\":[],\"sources\":[]}");
+        mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON).content("{\"gameName\":\"Game\"}"))
+                .andExpect(status().isOk());
+        assertThat(lookup.exists("Game")).isTrue();
+    }
+
+    @Test
+    void reportsStorageFailureInsteadOfSuccess() throws Exception {
+        Files.writeString(temp.resolve("knowledge-base"), "not a directory");
+        mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON).content("{\"gameName\":\"Game\"}"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value("storage_error"));
+    }
+
+    @Test
+    void rebuildingIsUnavailableUntilPublishedAndRejectsConcurrentBuilds() throws Exception {
+        lookup.save("Game", mapper.readTree("{\"bosses\":[],\"sources\":[]}"));
+        responseRelease = new CountDownLatch(1);
+        var pending = executor.submit(() -> mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"gameName\":\"Game\",\"overwrite\":true}")).andReturn());
+        assertThat(upstreamEntered.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(lookup.exists("Game")).isFalse();
+        mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON).content("{\"gameName\":\"Game\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("busy"));
+        responseRelease.countDown();
+        assertThat(pending.get(3, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(200);
+        assertThat(lookup.exists("Game")).isTrue();
+        assertThat(calls.get()).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"null", "\"true\"", "1", "{}"})
+    void rejectsNonBooleanOverwrite(String overwrite) throws Exception {
+        mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"gameName\":\"Game\",\"overwrite\":" + overwrite + "}"))
+                .andExpect(status().isBadRequest());
+        assertThat(calls.get()).isZero();
     }
 }
