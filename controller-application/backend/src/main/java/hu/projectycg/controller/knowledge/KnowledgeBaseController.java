@@ -16,7 +16,7 @@ public class KnowledgeBaseController {
     }
 
     @PostMapping("/build")
-    public Result build(@RequestBody JsonNode request) {
+    public KnowledgeBaseService.BuildResult build(@RequestBody JsonNode request) {
         if (request == null || !request.isObject() || !request.path("gameName").isString()) {
             throw invalidRequest();
         }
@@ -24,10 +24,11 @@ public class KnowledgeBaseController {
         if (gameName.isBlank() || gameName.length() > 200) {
             throw invalidRequest();
         }
-        if (service.build(gameName) == KnowledgeBaseService.BuildOutcome.ALREADY_EXISTS) {
-            return new Result("already_exists", "Knowledge base already exists");
+        if (request.has("overwrite") && !request.path("overwrite").isBoolean()) {
+            throw new KnowledgeBaseException(KnowledgeBaseException.Code.INVALID_REQUEST,
+                    "overwrite must be a boolean when provided.");
         }
-        return new Result("completed", "Knowledge base response validated and printed.");
+        return service.build(gameName, request.path("overwrite").asBoolean(false));
     }
 
     private KnowledgeBaseException invalidRequest() {
@@ -35,5 +36,4 @@ public class KnowledgeBaseController {
                 "gameName must be a non-blank string of at most 200 characters.");
     }
 
-    public record Result(String status, String message) {}
 }

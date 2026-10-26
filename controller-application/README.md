@@ -93,7 +93,8 @@ controller address (default `http://127.0.0.1:8080`).
 ```
 
 The controller trims and validates the game name (1–200 characters), requires
-at least one absolute path to a readable nonempty file, and rejects duplicate
+an existing knowledge-base JSON file for that title, and requires
+at least one absolute path to a readable nonempty file. It rejects duplicate
 canonical paths. It passes the original resolved paths to Python. No filename
 matching, configured input directory, upload, or source copy is involved.
 The desktop and both services run on the same machine with access to these files.
@@ -149,14 +150,20 @@ optional TOML override file on each processing request. JPEG quality stays in
 the Python configuration. The UI has no sampling interval control.
 
 Validation errors return HTTP 400, unreadable or missing sources 404,
-a busy controller 409, and local storage failures 500. Errors contain
+a busy controller or missing knowledge base 409, and local storage failures 500. Errors contain
 `code` and `message`. Once a job is accepted, processing errors are reported in
 its event stream and snapshot.
+The missing-knowledge-base response uses `code: "missing_knowledge_base"` and
+asks the user to run Build Knowledge Base first. This check happens before any
+job, proxy, or frame sampling is started; knowledge content is not yet consumed
+by video processing.
 
 After `mvn package` in `backend/`, run `npm run test:integration` in `frontend/`
 to launch isolated Java/Python services on ports 18080/18090 and a hidden Electron
 window. This creates two short synthetic videos, selects their real native paths,
-clicks Process, verifies event replay after reload, checks the H.264/480p proxies
+verifies that Process is blocked without knowledge, builds JSON through a local
+LM Studio HTTP stand-in, checks the logged absolute path, cancellation and confirmed
+overwrite, then clicks Process, verifies event replay after reload, checks the H.264/480p proxies
 and their duration, verifies timestamped JPEGs and proxy/sample stage ordering,
 and confirms that the source files are unchanged. Generated
 fixtures and logs stay under the ignored `controller-application/.cache/` folder.
@@ -201,8 +208,28 @@ Content-Type: application/json
 ```
 
 `gameName` must be a non-blank string, at most 200 characters after trimming.
-The current `KnowledgeBaseLookup.exists` implementation always returns `false`.
-Its already-existing branch is covered by a test and skips the AI request.
+The backend stores the validated answer as UTF-8 JSON at
+`controller-application/backend/data/knowledge-base/<Game Title>.json` when
+launched from the backend directory or with the supplied Maven launchers.
+`YCG_KNOWLEDGE_BASE_OUTPUT_ROOT` overrides the default `./data/knowledge-base`
+(relative to the backend process working directory).
+Normal titles retain their spaces and Unicode characters. Characters forbidden
+in Windows filenames, control characters and `%` are escaped as `%XXXX`;
+reserved Windows device names have their first character escaped. This keeps
+titles such as `Game: Edition` safe and distinct from literal escaped titles.
+Names exceeding 240 characters or UTF-8 bytes after escaping are rejected with
+HTTP 400; use a shorter title. Lookup and processing use the same filename rule
+and the filesystem's case sensitivity.
+
+If the file exists, the request returns `already_exists` with its absolute
+`outputPath`, without invoking AI or modifying the file. The desktop displays
+a confirmation dialog. Cancel leaves the file unchanged; Rebuild sends the
+same request with `"overwrite":true`. A confirmed rebuild removes the old file
+immediately, then acquires and validates fresh knowledge. Failure leaves no valid
+knowledge base for that title, so Process remains blocked until a build succeeds.
+Only complete validated JSON is published, via a temporary file and an atomic
+move in the same directory. Storage failures are reported, never as success.
+One knowledge-base build is allowed at a time; concurrent builds return HTTP 409.
 
 The backend reads `src/main/resources/templates/knowledge_base_aquire_prompt.tpl`
 as UTF-8, replaces `<?GAME_TITLE>` with the game name and `<?SOURCE_SITE>` with
@@ -221,18 +248,20 @@ rejected. This checks structure, not the factual accuracy of the model's claims.
 
 | HTTP status | Result |
 | --- | --- |
-| 200 | `{"status":"completed","message":"Knowledge base response validated and printed."}` |
-| 200 | `{"status":"already_exists","message":"Knowledge base already exists"}` |
+| 200 | `{"status":"completed","message":"Knowledge base saved successfully.","outputPath":"<absolute JSON path>"}` |
+| 200 | `{"status":"already_exists","message":"Knowledge base already exists","outputPath":"<absolute JSON path>"}` |
 | 400 | Missing, malformed, or invalid game name/request |
+| 409 | Another knowledge-base build is running (`busy`) |
 | 415 | Unsupported request content type |
 | 502 | LM Studio returned an HTTP error, malformed chat envelope, or invalid answer |
 | 503 | LM Studio is unreachable or communication was interrupted |
 | 504 | LM Studio request timed out |
-| 500 | Prompt template or unexpected application error |
+| 500 | File access/save failure (`storage_error`), prompt template or unexpected application error |
 
 Errors use `{"code":"...","message":"..."}` with an English message. Validated
-JSON is printed once through the backend logger; no output files, database
-records, or subsequent processing are created. There are no automatic retries.
+JSON is saved locally and is not printed to the backend console. The activity
+log reports success with the exact absolute JSON path, or the failure message.
+There are no automatic retries or subsequent AI processing.
 A timeout or closed browser does not guarantee that LM Studio stopped processing.
 
 ### LM Studio configuration

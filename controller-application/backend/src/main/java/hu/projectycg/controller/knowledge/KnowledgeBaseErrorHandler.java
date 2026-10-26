@@ -21,7 +21,8 @@ public class KnowledgeBaseErrorHandler {
             case AI_UNAVAILABLE -> HttpStatus.SERVICE_UNAVAILABLE;
             case AI_TIMEOUT -> HttpStatus.GATEWAY_TIMEOUT;
             case AI_HTTP_ERROR, INVALID_AI_RESPONSE -> HttpStatus.BAD_GATEWAY;
-            case PROMPT_ERROR -> HttpStatus.INTERNAL_SERVER_ERROR;
+            case PROMPT_ERROR, STORAGE_ERROR -> HttpStatus.INTERNAL_SERVER_ERROR;
+            case BUSY, MISSING_KNOWLEDGE_BASE -> HttpStatus.CONFLICT;
         };
         LOG.warn("Knowledge-base request failed [{}]: {}", exception.code(), exception.getMessage());
         return ResponseEntity.status(status)

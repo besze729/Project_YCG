@@ -2,6 +2,12 @@ package hu.projectycg.controller.video;
 
 import static org.assertj.core.api.Assertions.*;
 import com.sun.net.httpserver.HttpServer;
+import hu.projectycg.controller.knowledge.KnowledgeBaseLookup;
+import hu.projectycg.controller.knowledge.KnowledgeBaseException;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.net.InetSocketAddress;
@@ -27,6 +33,7 @@ class ProxyJobsTests {
     final JsonMapper mapper = JsonMapper.builder().build();
     HttpServer server;
     ProxyJobs jobs;
+    KnowledgeBaseLookup knowledgeBase;
     VideoProcessingProperties properties;
     final List<JsonNode> requests = new CopyOnWriteArrayList<>();
     final List<String> operations = new CopyOnWriteArrayList<>();
@@ -72,7 +79,9 @@ class ProxyJobsTests {
         server.start();
         properties = new VideoProcessingProperties(URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
                 temp.resolve("outputs"), Duration.ofSeconds(1), Duration.ofMillis(300), new BigDecimal("30"));
-        jobs = new ProxyJobs(new VideoProcessingClient(properties), properties);
+        knowledgeBase = new KnowledgeBaseLookup(temp.resolve("knowledge-base"));
+        knowledgeBase.save("Game", mapper.readTree("{\"bosses\":[],\"sources\":[]}"));
+        jobs = new ProxyJobs(new VideoProcessingClient(properties), properties, knowledgeBase);
     }
 
     @AfterEach void stop() {
@@ -93,6 +102,23 @@ class ProxyJobsTests {
         long until = System.nanoTime() + Duration.ofSeconds(5).toNanos();
         while (job.snapshot().path("state").asString().equals("running") && System.nanoTime() < until) Thread.sleep(20);
         assertThat(job.snapshot().path("state").asString()).isNotEqualTo("running");
+    }
+
+    @Test void missingKnowledgeBasePreventsJobCreationAndDownstreamCalls() throws Exception {
+        var mvc = MockMvcBuilders.standaloneSetup(new ProxyController(jobs)).build();
+        mvc.perform(post("/api/chapters/jobs").contentType(MediaType.APPLICATION_JSON)
+                        .content(request("Missing game", source("one.mp4")).toString()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("missing_knowledge_base"));
+        assertThat(requests).isEmpty();
+        assertThat(temp.resolve("outputs")).doesNotExist();
+        knowledgeBase.invalidate("Game");
+        assertThatThrownBy(() -> jobs.start(request("Game", source("one.mp4"))))
+                .isInstanceOf(KnowledgeBaseException.class);
+        knowledgeBase.save("Game", mapper.readTree("{\"bosses\":[],\"sources\":[]}"));
+        var job = jobs.start(request("Game", source("one.mp4")));
+        await(job);
+        assertThat(job.state).isEqualTo("completed");
     }
 
     @Test void passesOriginalPathsAndGameAndReplaysEvents() throws Exception {
@@ -119,7 +145,7 @@ class ProxyJobsTests {
         var stream = new ByteArrayOutputStream();
         job.stream(1, stream);
         assertThat(stream.toString(StandardCharsets.UTF_8)).contains("commandLine", "210", "job_completed", "sample", "total_frames").doesNotContain("job_started");
-        var restored = new ProxyJobs(new VideoProcessingClient(properties), properties);
+        var restored = new ProxyJobs(new VideoProcessingClient(properties), properties, knowledgeBase);
         try { assertThat(restored.get(job.id).snapshot()).isEqualTo(job.snapshot()); }
         finally { restored.shutdown(); }
     }
@@ -212,7 +238,7 @@ class ProxyJobsTests {
         jobs.shutdown();
         var configured = new VideoProcessingProperties(properties.baseUrl(), properties.outputRoot(),
                 properties.connectTimeout(), properties.idleTimeout(), new BigDecimal("0.5"));
-        jobs = new ProxyJobs(new VideoProcessingClient(configured), configured);
+        jobs = new ProxyJobs(new VideoProcessingClient(configured), configured, knowledgeBase);
         var job = jobs.start(request("Game", source("one.mp4")));
         await(job);
         assertThat(requests.get(1).path("intervalSeconds").asDouble()).isEqualTo(0.5);
