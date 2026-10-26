@@ -46,7 +46,22 @@ the FFmpeg command visible without filling the log with per-second entries.
 
 First install the frontend dependencies with `npm ci` in `frontend/` and the
 Python HTTP dependencies following the video service README. From the repository
-root, run these in separate terminals:
+root, start all three modules with:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-all.ps1
+```
+
+The master launcher starts the backend with `mvn spring-boot:run`; Maven checks
+whether sources need compiling. Pass `-U` to build and package the backend
+before starting. Press Ctrl+C in the launcher terminal to stop the desktop,
+controller, and Python service; closing
+the desktop window also stops both services. Logs are stored in the ignored
+`controller-application/.cache/master-launcher-*/` directory. Maven output in
+`backend.out.log` includes timestamps. The launcher uses the existing DPAPI LM
+Studio token file required by `start-backend.ps1`.
+
+For independent development, run the modules in separate terminals:
 
 ```powershell
 # Python service on 127.0.0.1:8090
@@ -59,7 +74,8 @@ mvn -f .\controller-application\backend\pom.xml spring-boot:run
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\controller-application\start-desktop.ps1
 ```
 
-The existing token-aware backend launcher may also be used. Electron downloads
+The token-aware backend launcher may also be used independently; it runs
+`mvn spring-boot:run`. Electron downloads
 its runtime on first launch. The desktop launcher builds the UI before opening;
 it uses the same local Node fallback as `start-frontend.ps1`. Java, Python, and
 FFmpeg remain separately installed local processes; an all-in-one installer is
