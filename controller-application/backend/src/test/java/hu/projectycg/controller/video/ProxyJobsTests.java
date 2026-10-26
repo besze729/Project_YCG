@@ -3,6 +3,7 @@ package hu.projectycg.controller.video;
 import static org.assertj.core.api.Assertions.*;
 import com.sun.net.httpserver.HttpServer;
 import java.io.ByteArrayOutputStream;
+import java.math.BigDecimal;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -10,8 +11,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.web.server.ResponseStatusException;
@@ -25,9 +29,16 @@ class ProxyJobsTests {
     ProxyJobs jobs;
     VideoProcessingProperties properties;
     final List<JsonNode> requests = new CopyOnWriteArrayList<>();
+    final List<String> operations = new CopyOnWriteArrayList<>();
     volatile String response = "{\"state\":\"started\",\"command\":[\"ffmpeg\",\"-i\",\"original.mp4\"],\"commandLine\":\"ffmpeg -i original.mp4\"}\n"
             + "{\"state\":\"running\",\"fps\":210,\"percent\":50}\n{\"state\":\"completed\"}\n";
     volatile int status = 200;
+    volatile String sampleResponse = "{\"operation\":\"sample\",\"state\":\"started\",\"commandLine\":\"ffmpeg sample\"}\n"
+            + "{\"operation\":\"sample\",\"state\":\"running\",\"frame_count\":1,\"total_frames\":1}\n"
+            + "{\"operation\":\"sample\",\"state\":\"completed\",\"frame_count\":1}\n";
+    volatile int sampleStatus = 200;
+    final CountDownLatch sampleEntered = new CountDownLatch(1);
+    volatile CountDownLatch sampleRelease;
     volatile long delay;
     java.util.concurrent.ExecutorService executor;
 
@@ -35,23 +46,39 @@ class ProxyJobsTests {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         executor = Executors.newVirtualThreadPerTaskExecutor();
         server.setExecutor(executor);
-        server.createContext("/api/proxy", exchange -> {
-            requests.add(mapper.readTree(exchange.getRequestBody().readAllBytes()));
+        server.createContext("/api/", exchange -> {
+            String operation = exchange.getRequestURI().getPath().substring("/api/".length());
+            operations.add(operation);
+            var body = mapper.readTree(exchange.getRequestBody().readAllBytes());
+            requests.add(body);
+            boolean sample = operation.equals("sample");
+            String content = sample ? sampleResponse : response;
+            int code = sample ? sampleStatus : status;
             exchange.getResponseHeaders().add("Content-Type", "application/x-ndjson");
-            exchange.sendResponseHeaders(status, 0);
+            exchange.sendResponseHeaders(code, 0);
             try {
                 if (delay > 0) Thread.sleep(delay);
-                exchange.getResponseBody().write(response.getBytes(StandardCharsets.UTF_8));
+                if (sample) {
+                    sampleEntered.countDown();
+                    if (sampleRelease != null) sampleRelease.await(5, TimeUnit.SECONDS);
+                }
+                if (!sample && code == 200 && content.contains("completed")) {
+                    Files.writeString(Path.of(body.path("outputVideo").asString()), "published proxy");
+                }
+                exchange.getResponseBody().write(content.getBytes(StandardCharsets.UTF_8));
             } catch (InterruptedException ex) { Thread.currentThread().interrupt(); }
             finally { exchange.close(); }
         });
         server.start();
         properties = new VideoProcessingProperties(URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
-                temp.resolve("outputs"), Duration.ofSeconds(1), Duration.ofMillis(300));
+                temp.resolve("outputs"), Duration.ofSeconds(1), Duration.ofMillis(300), new BigDecimal("30"));
         jobs = new ProxyJobs(new VideoProcessingClient(properties), properties);
     }
 
-    @AfterEach void stop() { jobs.shutdown(); server.stop(0); executor.shutdownNow(); }
+    @AfterEach void stop() {
+        if (sampleRelease != null) sampleRelease.countDown();
+        jobs.shutdown(); server.stop(0); executor.shutdownNow();
+    }
 
     JsonNode request(String game, Path... sources) {
         var result = mapper.createObjectNode().put("gameName", game);
@@ -74,16 +101,26 @@ class ProxyJobsTests {
         var job = jobs.start(request(" Game ", first, second));
         await(job);
         assertThat(job.state).isEqualTo("completed");
-        assertThat(requests).hasSize(2);
+        assertThat(requests).hasSize(4);
+        assertThat(operations).containsExactly("proxy", "sample", "proxy", "sample");
         assertThat(requests.get(0).path("gameName").asString()).isEqualTo("Game");
         assertThat(requests.get(0).path("inputVideo").asString()).isEqualTo(first.toRealPath().toString());
-        assertThat(requests.get(1).path("inputVideo").asString()).isEqualTo(second.toRealPath().toString());
+        assertThat(requests.get(2).path("inputVideo").asString()).isEqualTo(second.toRealPath().toString());
+        for (int i = 0; i < 2; i++) {
+            var proxy = requests.get(i * 2);
+            var sample = requests.get(i * 2 + 1);
+            var video = job.snapshot().path("videos").get(i);
+            assertThat(sample.path("inputVideo").asString()).isEqualTo(proxy.path("outputVideo").asString());
+            assertThat(sample.path("outputDirectory").asString()).isEqualTo(video.path("framesDirectory").asString());
+            assertThat(sample.path("gameName").asString()).isEqualTo("Game");
+            assertThat(sample.path("intervalSeconds").asInt()).isEqualTo(30);
+        }
         assertThat(Files.readString(first)).isEqualTo("original media");
         var stream = new ByteArrayOutputStream();
         job.stream(1, stream);
-        assertThat(stream.toString(StandardCharsets.UTF_8)).contains("commandLine", "210", "job_completed").doesNotContain("job_started");
+        assertThat(stream.toString(StandardCharsets.UTF_8)).contains("commandLine", "210", "job_completed", "sample", "total_frames").doesNotContain("job_started");
         var restored = new ProxyJobs(new VideoProcessingClient(properties), properties);
-        try { assertThat(restored.get(job.id).snapshot().path("state").asString()).isEqualTo("completed"); }
+        try { assertThat(restored.get(job.id).snapshot()).isEqualTo(job.snapshot()); }
         finally { restored.shutdown(); }
     }
 
@@ -126,5 +163,87 @@ class ProxyJobsTests {
         var job = jobs.start(request("Game", source("one.mp4")));
         await(job);
         assertThat(job.state).isEqualTo("failed");
+    }
+
+    @Test void jobStaysRunningUntilSamplingCompletes() throws Exception {
+        sampleRelease = new CountDownLatch(1);
+        var path = source("one.mp4");
+        var job = jobs.start(request("Game", path));
+        try {
+            assertThat(sampleEntered.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(job.state).isEqualTo("running");
+            assertThatThrownBy(() -> jobs.start(request("Game", path)))
+                    .isInstanceOf(ResponseStatusException.class).hasMessageContaining("409");
+        } finally { sampleRelease.countDown(); }
+        await(job);
+        assertThat(job.state).isEqualTo("completed");
+    }
+
+    @Test void samplingFailureRetainsProxyAndStopsBeforeNextVideo() throws Exception {
+        sampleResponse = "{\"state\":\"failed\",\"detail\":\"JPEG write failed\"}\n";
+        var job = jobs.start(request("Game", source("one.mp4"), source("two.mp4")));
+        await(job);
+        assertThat(job.state).isEqualTo("failed");
+        assertThat(job.message).contains("one.mp4", "frame sampling", "JPEG write failed");
+        assertThat(operations).containsExactly("proxy", "sample");
+        assertThat(Path.of(job.videos.getFirst().outputPath())).hasContent("published proxy");
+        assertThat(Path.of(job.videos.getFirst().framesDirectory())).doesNotExist();
+        assertThat(Files.readString(job.directory.resolve("events.jsonl"))).contains("job_failed").doesNotContain("job_completed");
+    }
+
+    @Test void samplingEofWithoutCompletionFails() throws Exception {
+        sampleResponse = "{\"state\":\"running\",\"frame_count\":1}\n";
+        var job = jobs.start(request("Game", source("one.mp4")));
+        await(job);
+        assertThat(job.state).isEqualTo("failed");
+        assertThat(job.message).contains("before confirming sample completion");
+    }
+
+    @Test void samplingHttpErrorFailsWithStageAndReason() throws Exception {
+        sampleStatus = 409;
+        sampleResponse = "{\"detail\":\"Output already exists.\"}";
+        var job = jobs.start(request("Game", source("one.mp4")));
+        await(job);
+        assertThat(job.state).isEqualTo("failed");
+        assertThat(job.message).contains("frame sampling", "HTTP 409", "Output already exists");
+    }
+
+    @Test void configuredFractionalIntervalIsSentAndPersisted() throws Exception {
+        jobs.shutdown();
+        var configured = new VideoProcessingProperties(properties.baseUrl(), properties.outputRoot(),
+                properties.connectTimeout(), properties.idleTimeout(), new BigDecimal("0.5"));
+        jobs = new ProxyJobs(new VideoProcessingClient(configured), configured);
+        var job = jobs.start(request("Game", source("one.mp4")));
+        await(job);
+        assertThat(requests.get(1).path("intervalSeconds").asDouble()).isEqualTo(0.5);
+        var persisted = mapper.readTree(Files.readString(job.directory.resolve("job.json")));
+        assertThat(persisted.path("samplingIntervalSeconds").asDouble()).isEqualTo(0.5);
+    }
+
+    @Test void invalidSamplingConfigurationFailsEarly() {
+        for (var interval : List.of("0", "-1", "0.0001")) {
+            assertThatThrownBy(() -> new VideoProcessingProperties(properties.baseUrl(), properties.outputRoot(),
+                    properties.connectTimeout(), properties.idleTimeout(), new BigDecimal(interval)))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Sampling interval");
+        }
+        assertThatThrownBy(() -> new VideoProcessingProperties(properties.baseUrl(), properties.outputRoot(),
+                properties.connectTimeout(), properties.idleTimeout(), null))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Sampling interval");
+    }
+
+    @Test void legacyProxyOnlyJobsRemainReadableWithoutStartingSampling() throws Exception {
+        String id = UUID.randomUUID().toString();
+        var directory = Files.createDirectories(properties.outputRoot().resolve(id));
+        var snapshot = mapper.createObjectNode().put("jobId", id).put("gameName", "Game")
+                .put("state", "completed").put("message", "All proxy videos are ready.");
+        snapshot.putArray("videos").addObject().put("name", "old.mp4").put("inputPath", "old.mp4")
+                .put("outputPath", "0001-proxy.mp4");
+        Files.writeString(directory.resolve("job.json"), mapper.writeValueAsString(snapshot));
+        Files.writeString(directory.resolve("events.jsonl"), "{\"id\":1,\"state\":\"job_completed\"}\n");
+        var restored = jobs.get(id).snapshot();
+        assertThat(restored.path("state").asString()).isEqualTo("completed");
+        assertThat(restored.path("videos").get(0).path("framesDirectory").isNull()).isTrue();
+        assertThat(restored.path("samplingIntervalSeconds").isNull()).isTrue();
+        assertThat(requests).isEmpty();
     }
 }

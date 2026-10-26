@@ -51,6 +51,16 @@ frame_000042_00-21-00.000.jpg
 
 No additional frame metadata file is required.
 
+The filename records the requested source timestamp. FFmpeg's `fps` filter uses
+upward input-timestamp rounding so each target selects the frame at or before
+that time, with first-frame padding when seeking starts between decoded frames.
+EOF handling preserves the initial sample even when the video is shorter than
+the sampling interval. This avoids a half-interval shift between filenames and
+image content. Images are staged and the directory is published only after the
+expected frame count is verified. The requested frame count stops FFmpeg;
+an output-side duration limit would drop a valid last sample when it falls close
+to the end of the source.
+
 ### Sampling Configuration
 
 ```text
@@ -98,6 +108,14 @@ locations, persistent event logs, and frontend reconnection. FFmpeg settings
 remain in the Python TOML configuration, with an optional `YCG_VIDEO_CONFIG`
 override loaded for each request. A disconnected controller interrupts encoding
 at the next progress callback; a disconnected frontend does not cancel the job.
+
+`POST /api/proxy` and `POST /api/sample` share one processing slot. The sample
+endpoint accepts `gameName`, `inputVideo`, `outputDirectory`, `intervalSeconds`,
+and optional `startTime`/`endTime`. Progress identifies `operation` as `proxy`
+or `sample`; sample completion includes the frame directory and frame count.
+For Build Chapters the controller runs proxy creation then coarse sampling for
+each video sequentially. It owns the configurable coarse interval (default
+30 seconds) and records that value and both output paths in job metadata.
 
 For sparse sampling, the displayed source position is the most recent requested
 sample timestamp. A continuous completion percentage would be misleading because

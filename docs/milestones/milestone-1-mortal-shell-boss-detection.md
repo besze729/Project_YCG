@@ -20,16 +20,21 @@ selection. An activity log is available below either action.
 Build Chapters shows a Process button below the video picker. It is enabled
 only while a nonblank game name and at least one video are selected. The desktop
 window supplies absolute native file paths; the controller validates both inputs
-and requests proxy creation from the Python service. Videos are read in place,
+and requests proxy creation followed by frame sampling from the Python service.
+The controller's `backend/src/main/resources/application.properties` sets
+`ycg.video.sampling-interval-seconds` to 30 seconds initially;
+the UI does not expose an interval field. Videos are read in place,
 without uploads or source copies. A batch runs sequentially and stops on failure.
-Completed proxies remain available. The activity log shows the exact FFmpeg
-commands, live position, percentage, FPS, speed, and completion or failure. Events
+Completed proxies and frame directories remain available. Each video finishes
+both stages before the next begins. The activity log shows the exact FFmpeg
+commands, stage, live position, proxy percentage, sampled/expected frame counts,
+FPS, speed, and completion or failure. Events
 are persisted by the controller and replayed on frontend reconnection.
 
 Build Knowledge Base is connected to a synchronous backend request. Start
 reports a pending request and then success or failure in the activity log.
-Build Chapters currently ends after proxy generation; frame sampling and boss
-detection are not yet connected to this button. Its label does not expand the
+Build Chapters currently ends after coarse frame sampling; boss detection is
+not yet connected to this button. Its label does not expand the
 milestone beyond active boss fight detection.
 
 ## Build knowledge base for the game

@@ -349,7 +349,7 @@ def create_proxy(input_video: str | Path, output_video: str | Path,
 def sample_frames(video: str | Path, output_directory: str | Path,
                   sampling: SamplingConfig, config: ServiceConfig, *,
                   on_progress: ProgressCallback | None = None) -> SamplingResult:
-    """Extract one high-quality JPEG near each requested source timestamp.
+    """Extract one high-quality JPEG adjacent to each requested source timestamp.
 
     The sample grid starts at start_time. An explicit end_time is inclusive;
     source duration is exclusive because there is no frame at the end instant.
@@ -371,19 +371,17 @@ def sample_frames(video: str | Path, output_directory: str | Path,
     through_end = (before_duration if end is None else
                    int(((end - start) / interval).to_integral_value(rounding=ROUND_FLOOR)) + 1)
     count = min(before_duration, through_end)
-    # Decode at most half an interval beyond the last requested point so the
-    # fps filter can choose the nearest source frame without emitting extras.
-    read_length = min(duration - start,
-                      max(MILLISECOND, (count - 1) * interval + interval / 2))
-    if read_length <= 0:
-        raise VideoProcessingError("Sampling range contains no decodable video")
-
     command = [
         config.tools.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "warning", "-y",
-        "-ss", _ffmpeg_time(start), "-i", str(source), "-t", _ffmpeg_time(read_length),
+        "-ss", _ffmpeg_time(start), "-i", str(source),
         "-map", "0:v:0", "-an", "-sn", "-dn",
-        "-vf", f"fps=fps=1000/{int(interval * 1000)}:start_time=0:round=near",
+        # Round input timestamps up to their output slots, retaining the frame
+        # at/before each target instead of one up to half an interval later.
+        # EOF pass also emits the initial sample for videos shorter than a step.
+        "-vf", f"fps=fps=1000/{int(interval * 1000)}:start_time=0:round=up:eof_action=pass",
         "-fps_mode", "passthrough", "-q:v", str(config.sampling.jpeg_quality),
+        # A post-input -t limits output time and can discard the final sparse
+        # sample even when its requested timestamp is before source duration.
         "-frames:v", str(count), "-start_number", "0",
     ]
     latest: ProcessingProgress | None = None

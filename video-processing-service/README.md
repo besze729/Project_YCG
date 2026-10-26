@@ -37,9 +37,39 @@ game title and absolute paths. It streams `application/x-ndjson` progress with
 `started`, `running`, `completed`, or `failed` states, plus heartbeat records.
 The start record includes the argument array `command` and display string
 `commandLine`. Existing outputs are rejected; a failed run publishes no partial
-proxy. Only one proxy runs at once (concurrent requests receive HTTP 409).
+proxy. Only one processing operation (proxy or sampling) runs at once;
+concurrent requests receive HTTP 409.
 The controller and Python process must have access to the same local source
 paths. No upload, input staging copy, or network share translation is performed.
+
+`POST /api/sample` samples an existing local video, normally the completed proxy:
+
+```json
+{
+  "gameName": "Mortal Shell",
+  "inputVideo": "F:\\YCG\\job\\0001-proxy.mp4",
+  "outputDirectory": "F:\\YCG\\job\\0001-frames",
+  "intervalSeconds": 30
+}
+```
+
+`intervalSeconds` is required. Optional `startTime` (default 0) and `endTime`
+limit the range. Time values accept seconds as numbers or strings, or
+`HH:MM:SS[.mmm]`, with millisecond precision; the interval must be positive.
+An explicit end is inclusive, while the video duration is exclusive.
+For example, `intervalSeconds: 0.5, startTime: 10, endTime: 11` requests
+frames at 10, 10.5, and 11 seconds. A nonempty video shorter than the interval
+still produces the sample at 0 seconds.
+
+Sampling streams the same NDJSON lifecycle, with `operation: "sample"`,
+`inputVideo`, `outputDirectory`, `frame_count`, `total_frames`, and
+`source_seconds` (last requested sample timestamp). `percent` is null.
+The final `completed` event is emitted only after the entire frame directory
+has been published. Invalid request values return 422, relative paths 400,
+missing inputs 404, and an existing output or busy worker 409. Media-dependent
+range/probe errors and FFmpeg failures are terminal `failed` stream events.
+A disconnected controller interrupts processing at the next callback and
+cleans unpublished staging files; completed outputs are retained.
 
 Run `.\.venv\Scripts\python.exe -m unittest discover -s tests -v` to include the
 HTTP adapter tests along with the CLI and FFmpeg tests.
@@ -57,6 +87,7 @@ values per run. For example, a CPU override can contain:
 
 ```toml
 [proxy]
+acceleration = "cpu"
 video_codec = "libx264"
 encoder_preset = "medium"
 bitrate_kbps = 2500
@@ -119,8 +150,10 @@ than a percentage, since its FFmpeg output time advances in jumps.
 The sample grid is anchored at `start-time` (default 0). `end-time` is inclusive;
 the video duration is exclusive. Frames are named
 `frame_000042_00-21-00.000.jpg`, encoding the zero-based sample index and
-requested source timestamp. FFmpeg selects the nearest decoded frame, so the
-actual image time can differ by approximately a source frame interval. Sampling
+requested source timestamp. FFmpeg selects the decoded frame at or immediately
+before each target, padding with the first available frame at the start of a
+seeked range if necessary. The actual image time can differ by a source frame
+interval (or more across gaps in a variable-frame-rate source). Sampling
 from a proxy preserves its timeline relative to the original only when the proxy
 has the same starting timestamp and unedited duration, as this service produces.
 
@@ -128,6 +161,9 @@ Both operations reject an existing output path. A failed FFmpeg process leaves
 no published proxy or frame directory; rerun the command after fixing the error.
 Separate output directories can hold coarse and fine passes for reuse. The
 service reads video incrementally and runs one FFmpeg process per operation.
+Frame sampling stops decoding after the requested number of JPEGs has been
+written; it does not apply an output duration limit that could cut off the final
+sample near the end of a video.
 
 ## Python API
 

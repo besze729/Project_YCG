@@ -3,7 +3,8 @@ export type ProxyJob = {
   gameName: string
   state: 'running' | 'completed' | 'failed'
   message: string
-  videos: { name: string; inputPath: string; outputPath: string }[]
+  samplingIntervalSeconds?: number | null
+  videos: { name: string; inputPath: string; outputPath: string; framesDirectory?: string | null }[]
 }
 
 export type ProxyEvent = {
@@ -13,6 +14,7 @@ export type ProxyEvent = {
   message: string
   videoIndex?: number
   videoName?: string
+  operation?: 'proxy' | 'sample'
   commandLine?: string
   fps?: number | null
   speed?: number | null
@@ -20,6 +22,9 @@ export type ProxyEvent = {
   source_seconds?: number | null
   duration_seconds?: number | null
   outputVideo?: string
+  outputDirectory?: string
+  frame_count?: number | null
+  total_frames?: number | null
   detail?: string
 }
 
@@ -55,9 +60,10 @@ export function watchProxyJob(id: string, receive: (event: ProxyEvent) => void,
 }
 
 export function formatProgress(event: ProxyEvent): string {
-  const parts = [event.videoName || 'Proxy']
+  const parts = [event.videoName || 'Video', event.operation === 'sample' ? 'Frame sampling' : 'Proxy']
   if (event.percent != null) parts.push(`${event.percent.toFixed(1)}%`)
   if (event.source_seconds != null) parts.push(`${event.source_seconds.toFixed(1)} / ${event.duration_seconds?.toFixed(1) ?? '?'} s`)
+  if (event.operation === 'sample' && event.frame_count != null) parts.push(`frames ${event.frame_count} / ${event.total_frames ?? '?'}`)
   if (event.fps != null) parts.push(`${event.fps.toFixed(1)} fps`)
   if (event.speed != null) parts.push(`${event.speed.toFixed(2)}x`)
   return parts.join(' | ')
