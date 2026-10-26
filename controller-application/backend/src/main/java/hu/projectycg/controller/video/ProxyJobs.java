@@ -5,6 +5,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,6 +31,7 @@ import tools.jackson.databind.node.ObjectNode;
 public class ProxyJobs {
     private final VideoProcessingClient client;
     private final Path root;
+    private final BigDecimal samplingIntervalSeconds;
     private final JsonMapper mapper = JsonMapper.builder().build();
     private final Map<String, Job> jobs = new ConcurrentHashMap<>();
     private final AtomicBoolean busy = new AtomicBoolean();
@@ -38,27 +40,31 @@ public class ProxyJobs {
     public ProxyJobs(VideoProcessingClient client, VideoProcessingProperties properties) {
         this.client = client;
         root = properties.outputRoot().toAbsolutePath().normalize();
+        samplingIntervalSeconds = properties.samplingIntervalSeconds();
     }
 
-    public record Video(String name, String inputPath, String outputPath) {}
+    public record Video(String name, String inputPath, String outputPath, String framesDirectory) {}
 
     public final class Job {
         final String id;
         final String gameName;
         final List<Video> videos;
         final Path directory;
+        final BigDecimal samplingIntervalSeconds;
         volatile String state = "running";
-        volatile String message = "Proxy processing started.";
+        volatile String message = "Video preprocessing started.";
         long sequence;
 
-        Job(String id, String gameName, List<Video> videos, Path directory) {
+        Job(String id, String gameName, List<Video> videos, Path directory, BigDecimal samplingIntervalSeconds) {
             this.id = id; this.gameName = gameName; this.videos = videos; this.directory = directory;
+            this.samplingIntervalSeconds = samplingIntervalSeconds;
         }
 
         public synchronized ObjectNode snapshot() {
             var result = mapper.createObjectNode().put("jobId", id).put("gameName", gameName)
                     .put("state", state).put("message", message);
             result.set("videos", mapper.valueToTree(videos));
+            result.put("samplingIntervalSeconds", samplingIntervalSeconds);
             return result;
         }
 
@@ -131,7 +137,7 @@ public class ProxyJobs {
             if (!seen.add(path)) throw error(HttpStatus.BAD_REQUEST, "Video selected more than once: " + path);
             sources.add(path);
         }
-        if (!busy.compareAndSet(false, true)) throw error(HttpStatus.CONFLICT, "Another proxy batch is running.");
+        if (!busy.compareAndSet(false, true)) throw error(HttpStatus.CONFLICT, "Another preprocessing batch is running.");
         try {
             String id = UUID.randomUUID().toString();
             Path directory = Files.createDirectories(root.resolve(id));
@@ -139,9 +145,11 @@ public class ProxyJobs {
             for (int i = 0; i < sources.size(); i++) {
                 Path source = sources.get(i);
                 videos.add(new Video(source.getFileName().toString(), source.toString(),
-                        directory.resolve(String.format("%04d-proxy.mp4", i + 1)).toString()));
+                        directory.resolve(String.format("%04d-proxy.mp4", i + 1)).toString(),
+                        directory.resolve(String.format("%04d-frames", i + 1)).toString()));
             }
-            var job = new Job(id, request.path("gameName").asString().strip(), List.copyOf(videos), directory);
+            var job = new Job(id, request.path("gameName").asString().strip(), List.copyOf(videos), directory,
+                    samplingIntervalSeconds);
             job.save();
             job.emit(mapper.createObjectNode().put("state", "job_started").put("message", job.message));
             jobs.put(id, job);
@@ -151,21 +159,29 @@ public class ProxyJobs {
     }
 
     private void process(Job job) {
+        String stage = "Video preprocessing";
         try {
             for (int index = 0; index < job.videos.size(); index++) {
                 int videoIndex = index;
                 var video = job.videos.get(index);
-                client.createProxy(job.gameName, Path.of(video.inputPath()), Path.of(video.outputPath()), event -> {
-                    var enriched = ((ObjectNode) event).deepCopy();
-                    enriched.put("videoIndex", videoIndex).put("videoName", video.name());
-                    enriched.put("message", video.name() + ": " + event.path("state").asString());
-                    job.emit(enriched);
-                });
+                stage = video.name() + ": proxy creation";
+                client.createProxy(job.gameName, Path.of(video.inputPath()), Path.of(video.outputPath()),
+                        event -> relay(job, videoIndex, video, "proxy", event));
+                stage = video.name() + ": frame sampling";
+                client.sampleFrames(job.gameName, Path.of(video.outputPath()), Path.of(video.framesDirectory()),
+                        job.samplingIntervalSeconds, event -> relay(job, videoIndex, video, "sample", event));
             }
-            finish(job, "completed", "All proxy videos are ready.");
+            finish(job, "completed", "All proxy videos and sampled frames are ready.");
         } catch (Exception ex) {
-            finish(job, "failed", "Proxy processing failed: " + ex.getMessage());
+            finish(job, "failed", stage + " failed: " + ex.getMessage());
         } finally { busy.set(false); }
+    }
+
+    private void relay(Job job, int index, Video video, String operation, JsonNode event) {
+        var enriched = ((ObjectNode) event).deepCopy();
+        enriched.put("videoIndex", index).put("videoName", video.name()).put("operation", operation);
+        enriched.put("message", video.name() + ": " + operation + " " + event.path("state").asString());
+        job.emit(enriched);
     }
 
     private void finish(Job job, String state, String message) {
@@ -189,13 +205,15 @@ public class ProxyJobs {
         var snapshot = mapper.readTree(Files.readString(directory.resolve("job.json")));
         List<Video> videos = new ArrayList<>();
         for (var item : snapshot.path("videos")) videos.add(mapper.treeToValue(item, Video.class));
-        var job = new Job(id, snapshot.path("gameName").asString(), videos, directory);
+        var interval = snapshot.get("samplingIntervalSeconds");
+        var job = new Job(id, snapshot.path("gameName").asString(), videos, directory,
+                interval == null || interval.isNull() ? null : new BigDecimal(interval.asString()));
         job.state = snapshot.path("state").asString();
         job.message = snapshot.path("message").asString();
         try (var lines = Files.lines(directory.resolve("events.jsonl"))) {
             job.sequence = lines.count();
         }
-        if ("running".equals(job.state)) finish(job, "failed", "Controller restarted; processing was interrupted. Completed proxy files are retained.");
+        if ("running".equals(job.state)) finish(job, "failed", "Controller restarted; processing was interrupted. Completed proxies and frame directories are retained.");
         jobs.put(id, job);
         return job;
     }

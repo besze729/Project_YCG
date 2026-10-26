@@ -22,20 +22,21 @@ from video_processing_service.service import (
 
 
 class ConfigurationTests(unittest.TestCase):
-    def test_default_config_and_cpu_override(self):
+    def test_config_and_cpu_override(self):
         config = load_config()
         self.assertEqual(config.proxy.video_codec, "h264_nvenc")
-        self.assertEqual(config.proxy.acceleration, "cpu")
+        self.assertIn(config.proxy.acceleration, {"cpu", "cuda"})
         self.assertEqual(config.proxy.bitrate_kbps, 2000)
         self.assertEqual(config.proxy.height, 480)
         self.assertGreaterEqual(config.progress.interval_seconds, Decimal("0.1"))
         with TemporaryDirectory() as directory:
             path = Path(directory) / "custom.toml"
-            path.write_text('[proxy]\nvideo_codec = "libx264"\nencoder_preset = "medium"\n'
+            path.write_text('[proxy]\nacceleration = "cpu"\nvideo_codec = "libx264"\nencoder_preset = "medium"\n'
                             'width = 1280\nheight = 720\nbitrate_kbps = 2500\n',
                             encoding="utf-8")
             overridden = load_config(path)
             self.assertEqual(overridden.proxy.video_codec, "libx264")
+            self.assertEqual(overridden.proxy.acceleration, "cpu")
             self.assertEqual((overridden.proxy.width, overridden.proxy.height), (1280, 720))
             self.assertEqual(overridden.proxy.bitrate_kbps, 2500)
 
@@ -121,6 +122,50 @@ class ProgressTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
                      "FFmpeg and FFprobe required")
 class FfmpegIntegrationTests(unittest.TestCase):
+    def test_full_video_keeps_final_sample_before_duration(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "late-final-sample.mp4"
+            subprocess.run([
+                "ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                "testsrc2=size=64x48:rate=60:duration=33.616",
+                "-c:v", "libx264", str(source),
+            ], check=True)
+            result = sample_frames(source, root / "frames", SamplingConfig(30), load_config())
+            self.assertEqual(result.frame_count, 2)
+            self.assertEqual([frame.name for frame in sorted(result.directory.iterdir())], [
+                "frame_000000_00-00-00.000.jpg", "frame_000001_00-00-30.000.jpg",
+            ])
+
+    def test_sample_content_matches_requested_timestamps(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "color-timeline.mp4"
+            # Brief markers at 0s and 2s reveal sampling shifted by half an interval.
+            subprocess.run([
+                "ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                "color=c=red:s=32x32:r=10:d=0.2[a];"
+                "color=c=blue:s=32x32:r=10:d=1.8[b];"
+                "color=c=green:s=32x32:r=10:d=0.2[c];"
+                "color=c=yellow:s=32x32:r=10:d=1.8[d];"
+                "[a][b][c][d]concat=n=4:v=1:a=0",
+                "-c:v", "libx264", str(source),
+            ], check=True)
+            config = load_config()
+            result = sample_frames(source, root / "frames", SamplingConfig(2), config)
+            self.assertEqual(result.frame_count, 2)
+            pixels = []
+            for frame in sorted(result.directory.iterdir()):
+                pixels.append(subprocess.run([
+                    "ffmpeg", "-v", "error", "-i", str(frame),
+                    "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+                ], check=True, capture_output=True).stdout[:3])
+            red, green = pixels
+            self.assertGreater(red[0], 200, f"0s should be red: {list(red)}")
+            self.assertLess(red[2], 50)
+            self.assertGreater(green[1], 80, f"2s should be green: {list(green)}")
+            self.assertLess(green[0], 50)
+
     @unittest.skipUnless(shutil.which("nvidia-smi"), "NVIDIA GPU required")
     def test_cuda_decode_scale_and_nvenc_match_cpu_proxy_timeline(self):
         gpu = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True)
@@ -136,6 +181,7 @@ class FfmpegIntegrationTests(unittest.TestCase):
                 str(source),
             ], check=True)
             base = load_config()
+            base = replace(base, proxy=replace(base.proxy, acceleration="cpu"))
             base = replace(base, progress=replace(base.progress,
                                                   interval_seconds=Decimal("1.0")))
             cpu = create_proxy(source, root / "cpu.mp4", base)
@@ -198,7 +244,7 @@ class FfmpegIntegrationTests(unittest.TestCase):
     def test_proxy_and_coarse_fine_sampling(self):
         config = load_config()
         config = replace(config, proxy=replace(config.proxy,
-                         video_codec="libx264", encoder_preset="medium"),
+                         acceleration="cpu", video_codec="libx264", encoder_preset="medium"),
                          progress=replace(config.progress,
                                           interval_seconds=Decimal("1.0")))
         with TemporaryDirectory() as directory:
@@ -233,7 +279,7 @@ class FfmpegIntegrationTests(unittest.TestCase):
             self.assertIn("480", metadata)
 
             override = root / "cpu.toml"
-            override.write_text('[proxy]\nvideo_codec = "libx264"\n'
+            override.write_text('[proxy]\nacceleration = "cpu"\nvideo_codec = "libx264"\n'
                                 'encoder_preset = "medium"\n'
                                 '[progress]\ninterval_seconds = 1.0\n',
                                 encoding="utf-8")

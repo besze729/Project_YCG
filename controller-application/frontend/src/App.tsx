@@ -87,12 +87,13 @@ export default function App() {
   function followJob(id: string, resumed = false) {
     eventStream.current?.close()
     eventStream.current = watchProxyJob(id, event => {
-      const videoKey = `${id}:${event.videoIndex}`
+      const videoKey = `${id}:${event.videoIndex}:${event.operation ?? 'proxy'}`
       if (event.commandLine) log('info', `FFmpeg command: ${event.commandLine}`, `${videoKey}:command`)
       if (event.state === 'running') log('info', formatProgress(event), `${videoKey}:progress`)
-      else if (event.state === 'completed') log('success', `${event.videoName}: proxy ready — ${event.outputVideo}`, `${videoKey}:progress`)
-      else if (event.state === 'failed') log('error', `${event.videoName}: ${event.detail || event.message}`, `${videoKey}:progress`)
-      else if (event.state !== 'job_started' || !resumed) {
+      else if (event.state === 'completed') log('success', event.operation === 'sample'
+        ? `${event.videoName}: sampled frames ready (${event.frame_count}) — ${event.outputDirectory}`
+        : `${event.videoName}: proxy ready — ${event.outputVideo}`, `${videoKey}:progress`)
+      else if (event.state !== 'failed' && (event.state !== 'job_started' || !resumed)) {
         log(event.state === 'job_failed' ? 'error' : event.state === 'job_completed' ? 'success' : 'info', event.message, `${id}:${event.id}`)
       }
       if (event.state === 'job_completed' || event.state === 'job_failed') {
@@ -122,7 +123,7 @@ export default function App() {
         }
         if (!currentSessionId) {
           sessionStorage.setItem('ycg.currentProxyJob', id)
-          log('info', `Resuming an earlier proxy job for "${job.gameName}".`)
+          log('info', `Following an earlier preprocessing job for "${job.gameName}".`)
         }
         setIsProcessing(job.state === 'running')
         buildInFlight.current = job.state === 'running'
@@ -142,14 +143,14 @@ export default function App() {
     if (!title || videos.length === 0 || buildInFlight.current) return
     buildInFlight.current = true
     setIsProcessing(true)
-    log('info', `Starting proxy creation for "${title}" (${videos.length} videos).`)
+    log('info', `Starting proxy creation and frame sampling for "${title}" (${videos.length} videos).`)
     try {
       const job = await startProxyJob(title, videos.map(video => video.path))
       localStorage.setItem('ycg.lastProxyJob', job.jobId)
       sessionStorage.setItem('ycg.currentProxyJob', job.jobId)
       followJob(job.jobId)
     } catch (error) {
-      log('error', error instanceof Error ? error.message : 'Could not start proxy processing.')
+      log('error', error instanceof Error ? error.message : 'Could not start video preprocessing.')
       setIsProcessing(false)
       buildInFlight.current = false
     }
@@ -315,7 +316,7 @@ export default function App() {
                   </ul>
                 )}
                 <div className="action-footer video-footer">
-                  <p className="video-note"><span className="status-dot muted" />{isProcessing ? 'Creating proxy videos. Follow progress in the activity log.' : 'Original files are read directly. No video uploads or source copies.'}</p>
+                  <p className="video-note"><span className="status-dot muted" />{isProcessing ? 'Creating proxies and sampling frames. Follow progress in the activity log.' : 'Original files are read directly. No video uploads or source copies.'}</p>
                   <button className="primary-button" type="button" onClick={processVideos} disabled={!gameName.trim() || videos.length === 0 || busy}><Icon name="play" width="16" height="16" />{isProcessing ? 'Processing…' : 'Process'}</button>
                 </div>
               </div>

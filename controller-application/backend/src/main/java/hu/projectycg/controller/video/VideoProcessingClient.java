@@ -3,6 +3,7 @@ package hu.projectycg.controller.video;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.math.BigDecimal;
 import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -20,7 +21,18 @@ public class VideoProcessingClient {
     public VideoProcessingClient(VideoProcessingProperties properties) { this.properties = properties; }
 
     public void createProxy(String gameName, Path source, Path output, Consumer<JsonNode> events) throws IOException {
-        var connection = (HttpURLConnection) properties.baseUrl().resolve("/api/proxy").toURL().openConnection();
+        process("proxy", Map.of("gameName", gameName, "inputVideo", source.toString(),
+                "outputVideo", output.toString()), events);
+    }
+
+    public void sampleFrames(String gameName, Path source, Path output, BigDecimal intervalSeconds,
+            Consumer<JsonNode> events) throws IOException {
+        process("sample", Map.of("gameName", gameName, "inputVideo", source.toString(),
+                "outputDirectory", output.toString(), "intervalSeconds", intervalSeconds), events);
+    }
+
+    private void process(String operation, Map<String, ?> request, Consumer<JsonNode> events) throws IOException {
+        var connection = (HttpURLConnection) properties.baseUrl().resolve("/api/" + operation).toURL().openConnection();
         connection.setConnectTimeout(Math.toIntExact(properties.connectTimeout().toMillis()));
         // Read timeout applies between events, so multi-hour encodes remain supported.
         connection.setReadTimeout(Math.toIntExact(properties.idleTimeout().toMillis()));
@@ -28,8 +40,7 @@ public class VideoProcessingClient {
         connection.setRequestProperty("Content-Type", "application/json");
         connection.setRequestProperty("Accept", "application/x-ndjson");
         connection.setDoOutput(true);
-        var body = mapper.writeValueAsBytes(Map.of("gameName", gameName,
-                "inputVideo", source.toString(), "outputVideo", output.toString()));
+        var body = mapper.writeValueAsBytes(request);
         connection.setFixedLengthStreamingMode(body.length);
         try {
             try (var stream = connection.getOutputStream()) { stream.write(body); }
@@ -57,11 +68,11 @@ public class VideoProcessingClient {
                         throw new IOException("Video service returned an invalid progress event.");
                     }
                     events.accept(event);
-                    if ("failed".equals(state)) throw new IOException(event.path("detail").asString("Proxy creation failed."));
+                    if ("failed".equals(state)) throw new IOException(event.path("detail").asString(operation + " failed."));
                     if ("completed".equals(state)) { completed = true; break; }
                 }
             }
-            if (!completed) throw new IOException("Video service disconnected before confirming proxy completion.");
+            if (!completed) throw new IOException("Video service disconnected before confirming " + operation + " completion.");
         } finally { connection.disconnect(); }
     }
 }

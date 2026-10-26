@@ -25,7 +25,8 @@ Technology decisions are maintained in [the ADR directory](../docs/adr/).
   Selection accepts video MIME types or common video filename extensions;
   FFprobe validates the actual media. Empty files and duplicate paths are skipped.
   Process is enabled only with a nonblank game name and at least one video. It
-  creates proxies through the controller and Python service. Inputs are locked
+  creates proxies and samples JPEG frames through the controller and Python
+  service. Inputs are locked
   while processing. The list displays each selected file's absolute path.
 - The bottom **Activity log** displays timestamped information, success,
   warning, and error messages. It retains the latest 500
@@ -38,7 +39,7 @@ The regular browser remains useful for frontend development and knowledge-base
 requests, but cannot select video paths for processing. Reloading the current
 window restores its job events. A newly opened desktop window follows an earlier
 job only if it is still running; it does not replay completed or failed jobs.
-Live progress updates replace the corresponding video's progress row, keeping
+Live progress updates replace the corresponding video's stage progress row, keeping
 the FFmpeg command visible without filling the log with per-second entries.
 
 ## Run the desktop processing workflow
@@ -67,7 +68,7 @@ controller address (default `http://127.0.0.1:8080`).
 
 ## Backend
 
-### Proxy processing contract
+### Video preprocessing contract
 
 `POST /api/chapters/jobs` accepts JSON:
 
@@ -82,35 +83,54 @@ matching, configured input directory, upload, or source copy is involved.
 The desktop and both services run on the same machine with access to these files.
 
 An accepted request returns HTTP 202 with `jobId`, `state`, `gameName`, and the
-planned `videos` (including `outputPath`). `GET /api/chapters/jobs/{jobId}` returns
+planned `videos` (including proxy `outputPath` and `framesDirectory`), plus the
+effective `samplingIntervalSeconds`. `GET /api/chapters/jobs/{jobId}` returns
 the current snapshot. `GET /api/chapters/jobs/{jobId}/events` is an SSE stream with
 numbered `processing` events and `Last-Event-ID` replay. Events contain `state`,
-`message`, `jobId`, and, for video events, `videoIndex`, `videoName`, and the
+`message`, `jobId`, and, for video events, `videoIndex`, `videoName`,
+`operation` (`proxy` or `sample`), and the
 Python progress fields (`fps`, `speed`, `source_seconds`, `duration_seconds`,
-`frame_count`, `percent`, `command`, `commandLine`). Video states are `started`,
+`frame_count`, `total_frames`, `percent`, `command`, `commandLine`). Sampling
+reports extracted/expected frames and the latest sample timestamp with null
+`percent`. Its output path is `outputDirectory`; proxy events use `outputVideo`.
+Video stage states are `started`,
 `running`, `completed`, and `failed`; batch states are `job_started`,
 `job_completed`, and `job_failed`. A lost event connection does not start another job.
 
-One batch runs at a time, with videos processed sequentially. A failed video
-stops the batch; earlier completed proxies are retained. Commands and events are
-saved alongside the proxies in `YCG_PROXY_OUTPUT_ROOT/<jobId>/`. Reloading the
+One batch runs at a time, with each video processed as proxy creation followed
+by full-video sampling before starting the next video. A failed stage stops the
+batch; completed proxies and frame directories are retained. The batch completes
+only after every video has both outputs. Commands and events are saved alongside
+`0001-proxy.mp4`, `0001-frames/`, etc. in `YCG_PROXY_OUTPUT_ROOT/<jobId>/`. Reloading the
 current page reconnects to its job. Controller restarts mark unfinished jobs as
 interrupted when accessed; they do not restart encoding automatically.
+Older proxy-only jobs remain readable; missing sampling fields are null and
+no sampling is retroactively started. Frontend replay treats old events without
+an `operation` field as proxy events.
 
 The controller calls the Python service with `POST /api/proxy`, sending JSON
-`{gameName,inputVideo,outputVideo}` using absolute local paths. Python responds
+`{gameName,inputVideo,outputVideo}` using absolute local paths. After proxy
+completion it calls `POST /api/sample` with
+`{gameName,inputVideo,outputDirectory,intervalSeconds}`, using the proxy as input.
+Python responds
 with `application/x-ndjson`, one progress object per line, plus idle heartbeats.
 The controller relays these through SSE. The `command` array is the actual
 process argument list; `commandLine` is its platform-specific display form.
-Completion is sent only after the proxy is published. Unexpected EOF and an
+Stage completion is sent only after its output is published. Unexpected EOF and an
 unreachable Python service become failed job events.
 
 Configuration: `YCG_VIDEO_SERVICE_URL` defaults to `http://127.0.0.1:8090` and
 `YCG_PROXY_OUTPUT_ROOT` to `./data/proxy-jobs` relative to the backend working
-directory. `YCG_VIDEO_CONNECT_TIMEOUT` defaults to `3s` and
+directory. Set `ycg.video.sampling-interval-seconds` directly in
+`backend/src/main/resources/application.properties` (initial value `30`). It
+accepts positive seconds with at most millisecond precision and is validated
+at controller startup. Restart the controller after changing the file; rebuild
+the JAR when running a packaged backend. The interval is captured in each new
+job's metadata. `YCG_VIDEO_CONNECT_TIMEOUT` defaults to `3s` and
 `YCG_VIDEO_IDLE_TIMEOUT` to `60s` (stream inactivity, not total encoding time).
 Both services bind to loopback. The Python server reads `YCG_VIDEO_CONFIG` as an
-optional TOML override file on each proxy request.
+optional TOML override file on each processing request. JPEG quality stays in
+the Python configuration. The UI has no sampling interval control.
 
 Validation errors return HTTP 400, unreadable or missing sources 404,
 a busy controller 409, and local storage failures 500. Errors contain
@@ -121,7 +141,8 @@ After `mvn package` in `backend/`, run `npm run test:integration` in `frontend/`
 to launch isolated Java/Python services on ports 18080/18090 and a hidden Electron
 window. This creates two short synthetic videos, selects their real native paths,
 clicks Process, verifies event replay after reload, checks the H.264/480p proxies
-and their duration, and confirms that the source files are unchanged. Generated
+and their duration, verifies timestamped JPEGs and proxy/sample stage ordering,
+and confirms that the source files are unchanged. Generated
 fixtures and logs stay under the ignored `controller-application/.cache/` folder.
 
 Install JDK 25 and Maven, set `JAVA_HOME` to the JDK directory, and make `mvn`

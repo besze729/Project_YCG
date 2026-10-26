@@ -3,7 +3,7 @@ ffmpeg = "ffmpeg"
 ffprobe = "ffprobe"
 
 [proxy]
-acceleration = "cpu"
+acceleration = "cuda"
 video_codec = "h264_nvenc"
 width = 854
 height = 480
@@ -17,3 +17,6 @@ jpeg_quality = 2
 
 [progress]
 interval_seconds = 1.0
+
+
+
