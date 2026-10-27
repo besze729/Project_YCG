@@ -66,18 +66,20 @@ app.whenReady().then(async () => {
     await evaluate(`document.querySelector('#action').value='chapters'; document.querySelector('#action').dispatchEvent(new Event('change', {bubbles:true}))`)
     await waitFor(`!!document.querySelector('.video-footer button')`)
     await evaluate(`document.querySelector('.video-footer button').click()`)
-    await waitFor(`document.body.innerText.includes('All proxy videos and sampled frames are ready.')`)
+    await waitFor(`document.body.innerText.includes('All videos have been sampled and analyzed for boss fights.')`)
     const text = await evaluate('document.body.innerText')
     assert.equal((text.match(/FFmpeg command:/g) || []).length, 4)
     assert.ok(text.includes('proxy ready'))
     assert.equal((text.match(/sampled frames ready \(1\)/g) || []).length, 2)
+    assert.equal((text.match(/boss fight analysis ready \(1 frames\)/g) || []).length, 2)
     assert.equal(await evaluate(`document.querySelector('.video-footer button').disabled`), false)
     // Page reload must replay the persisted commands and terminal state.
     wc.reload()
-    await waitFor(`document.body.innerText.includes('All proxy videos and sampled frames are ready.')`)
+    await waitFor(`document.body.innerText.includes('All videos have been sampled and analyzed for boss fights.')`)
     const replayed = await evaluate('document.body.innerText')
     assert.equal((replayed.match(/FFmpeg command:/g) || []).length, 4)
     assert.equal((replayed.match(/sampled frames ready \(1\)/g) || []).length, 2)
+    assert.equal((replayed.match(/boss fight analysis ready \(1 frames\)/g) || []).length, 2)
     // An old persisted job must not replay its start/failure when the app opens anew.
     const oldJobId = await evaluate(`sessionStorage.getItem('ycg.currentProxyJob')`)
     await evaluate(`localStorage.setItem('ycg.lastProxyJob', sessionStorage.getItem('ycg.currentProxyJob'))`)
@@ -87,7 +89,7 @@ app.whenReady().then(async () => {
     assert.ok(oldJobId)
     assert.ok(freshText.includes('Workspace ready.'))
     assert.ok(!freshText.includes('Video preprocessing started.'))
-    assert.ok(!freshText.includes('All proxy videos and sampled frames are ready.'))
+    assert.ok(!freshText.includes('All videos have been sampled and analyzed for boss fights.'))
     fresh.close()
     // A failed video emits both a stage failure and a terminal job failure.
     // The activity log should show one error while the journal retains both.

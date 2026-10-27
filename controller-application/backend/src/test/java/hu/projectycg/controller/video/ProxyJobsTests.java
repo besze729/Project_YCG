@@ -44,6 +44,9 @@ class ProxyJobsTests {
             + "{\"operation\":\"sample\",\"state\":\"running\",\"frame_count\":1,\"total_frames\":1}\n"
             + "{\"operation\":\"sample\",\"state\":\"completed\",\"frame_count\":1}\n";
     volatile int sampleStatus = 200;
+    volatile String detectionResponse = "{\"state\":\"started\",\"model\":\"test-vision\",\"promptSha256\":\"hash\"}\n"
+            + "{\"state\":\"running\",\"frame_count\":1,\"total_frames\":1,\"results\":[{\"imageIndex\":0,\"activeBossFight\":true}]}\n"
+            + "{\"state\":\"completed\",\"frame_count\":1}\n";
     final CountDownLatch sampleEntered = new CountDownLatch(1);
     volatile CountDownLatch sampleRelease;
     volatile long delay;
@@ -59,7 +62,8 @@ class ProxyJobsTests {
             var body = mapper.readTree(exchange.getRequestBody().readAllBytes());
             requests.add(body);
             boolean sample = operation.equals("sample");
-            String content = sample ? sampleResponse : response;
+            boolean detection = operation.equals("boss-detection");
+            String content = detection ? detectionResponse : sample ? sampleResponse : response;
             int code = sample ? sampleStatus : status;
             exchange.getResponseHeaders().add("Content-Type", "application/x-ndjson");
             exchange.sendResponseHeaders(code, 0);
@@ -69,7 +73,7 @@ class ProxyJobsTests {
                     sampleEntered.countDown();
                     if (sampleRelease != null) sampleRelease.await(5, TimeUnit.SECONDS);
                 }
-                if (!sample && code == 200 && content.contains("completed")) {
+                if (!sample && !detection && code == 200 && content.contains("completed")) {
                     Files.writeString(Path.of(body.path("outputVideo").asString()), "published proxy");
                 }
                 exchange.getResponseBody().write(content.getBytes(StandardCharsets.UTF_8));
@@ -127,24 +131,28 @@ class ProxyJobsTests {
         var job = jobs.start(request(" Game ", first, second));
         await(job);
         assertThat(job.state).isEqualTo("completed");
-        assertThat(requests).hasSize(4);
-        assertThat(operations).containsExactly("proxy", "sample", "proxy", "sample");
+        assertThat(requests).hasSize(6);
+        assertThat(operations).containsExactly("proxy", "sample", "boss-detection", "proxy", "sample", "boss-detection");
         assertThat(requests.get(0).path("gameName").asString()).isEqualTo("Game");
         assertThat(requests.get(0).path("inputVideo").asString()).isEqualTo(first.toRealPath().toString());
-        assertThat(requests.get(2).path("inputVideo").asString()).isEqualTo(second.toRealPath().toString());
+        assertThat(requests.get(3).path("inputVideo").asString()).isEqualTo(second.toRealPath().toString());
         for (int i = 0; i < 2; i++) {
-            var proxy = requests.get(i * 2);
-            var sample = requests.get(i * 2 + 1);
+            var proxy = requests.get(i * 3);
+            var sample = requests.get(i * 3 + 1);
+            var detection = requests.get(i * 3 + 2);
             var video = job.snapshot().path("videos").get(i);
             assertThat(sample.path("inputVideo").asString()).isEqualTo(proxy.path("outputVideo").asString());
             assertThat(sample.path("outputDirectory").asString()).isEqualTo(video.path("framesDirectory").asString());
             assertThat(sample.path("gameName").asString()).isEqualTo("Game");
             assertThat(sample.path("intervalSeconds").asInt()).isEqualTo(30);
+            assertThat(detection.path("gameName").asString()).isEqualTo("Game");
+            assertThat(detection.path("framesDirectory").asString()).isEqualTo(video.path("framesDirectory").asString());
+            assertThat(detection.path("outputFile").asString()).isEqualTo(video.path("bossDetectionsPath").asString());
         }
         assertThat(Files.readString(first)).isEqualTo("original media");
         var stream = new ByteArrayOutputStream();
         job.stream(1, stream);
-        assertThat(stream.toString(StandardCharsets.UTF_8)).contains("commandLine", "210", "job_completed", "sample", "total_frames").doesNotContain("job_started");
+        assertThat(stream.toString(StandardCharsets.UTF_8)).contains("commandLine", "210", "job_completed", "sample", "total_frames", "boss-detection", "activeBossFight", "promptSha256").doesNotContain("job_started");
         var restored = new ProxyJobs(new VideoProcessingClient(properties), properties, knowledgeBase);
         try { assertThat(restored.get(job.id).snapshot()).isEqualTo(job.snapshot()); }
         finally { restored.shutdown(); }
@@ -225,6 +233,24 @@ class ProxyJobsTests {
         assertThat(job.message).contains("before confirming sample completion");
     }
 
+    @Test void detectionFailureStopsBeforeNextVideo() throws Exception {
+        detectionResponse = "{\"state\":\"failed\",\"detail\":\"Invalid LM Studio detection response\"}\n";
+        var job = jobs.start(request("Game", source("one.mp4"), source("two.mp4")));
+        await(job);
+        assertThat(job.state).isEqualTo("failed");
+        assertThat(job.message).contains("one.mp4", "boss fight detection", "Invalid LM Studio");
+        assertThat(operations).containsExactly("proxy", "sample", "boss-detection");
+        assertThat(Files.readString(job.directory.resolve("events.jsonl"))).contains("job_failed").doesNotContain("job_completed");
+    }
+
+    @Test void detectionEofWithoutCompletionFails() throws Exception {
+        detectionResponse = "{\"state\":\"running\",\"frame_count\":1}\n";
+        var job = jobs.start(request("Game", source("one.mp4")));
+        await(job);
+        assertThat(job.state).isEqualTo("failed");
+        assertThat(job.message).contains("before confirming boss-detection completion");
+    }
+
     @Test void samplingHttpErrorFailsWithStageAndReason() throws Exception {
         sampleStatus = 409;
         sampleResponse = "{\"detail\":\"Output already exists.\"}";
@@ -269,6 +295,7 @@ class ProxyJobsTests {
         var restored = jobs.get(id).snapshot();
         assertThat(restored.path("state").asString()).isEqualTo("completed");
         assertThat(restored.path("videos").get(0).path("framesDirectory").isNull()).isTrue();
+        assertThat(restored.path("videos").get(0).path("bossDetectionsPath").isNull()).isTrue();
         assertThat(restored.path("samplingIntervalSeconds").isNull()).isTrue();
         assertThat(requests).isEmpty();
     }

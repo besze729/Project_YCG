@@ -19,10 +19,34 @@ Preferred quantization: **Q8_0**, with **Q4_K_M** as a fallback if necessary.
 
 - Use zero-shot visual recognition with structured prompts.
 - Introduce few-shot prompting with reference images if needed.
-- Return `PRESENT`, `ABSENT`, or `UNKNOWN`.
-- Use 480p proxy frames for detection.
+- Return one `activeBossFight` boolean for each input image, together with its `imageIndex`.
+- Use frames from the 720p analysis proxy for detection.
 - Initially sample every 30 seconds (configurable).
 - Refine detected fight boundaries using 5-second, then 1-second sampling.
+
+### Implemented first increment: batch detection
+
+The earlier three-state `PRESENT`/`ABSENT`/`UNKNOWN` proposal is replaced for
+this increment by the explicitly requested boolean contract. The prompt's
+decision rule is visibility of a boss health bar in the image's top region.
+Model uncertainty remains an accuracy limitation; transport errors, malformed
+responses and missing results are processing failures, never negative detections.
+
+Host the vision module inside the existing Python FastAPI service. Java retains
+workflow orchestration and progress replay. This follows the controller ADR's
+Python vision boundary without introducing another deployed process. The existing
+Java knowledge-base client retains its separate model and search integration.
+
+Use LM Studio's `/v1/chat/completions` image input and JSON-schema response format.
+Send at most five images per request initially, sequentially, with explicit
+indices and no previous conversation or tools. Validate every result's index,
+order and boolean type. Store the supplied prompt in an external editable template
+with `<?GAME_TITLE>` substitution; capture that prompt and the separate vision
+configuration once per run. Preserve successful batches in timestamped JSONL;
+publish a final file only on full success and retain partial data on failure.
+
+This increment stops at per-image predictions. Refinement, OCR and knowledge
+matching below describe later work, not behavior already provided by Process.
 
 ### Boss Name Recognition
 

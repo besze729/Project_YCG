@@ -21,5 +21,6 @@ each module are saved under `controller-application/.cache/master-launcher-*/`.
 Launcher stdout includes wall-clock timestamps and elapsed time for each startup
 and shutdown stage, including Maven build output with `-U`.
 The launcher requires the existing Python `.venv`, frontend dependencies, Java,
-Maven, and the LM Studio token file used by `start-backend.ps1`.
+Maven, and the LM Studio token file used by both the Java backend and Python
+vision module. The Python launcher loads the same saved token automatically.
 See the [controller guide](controller-application/README.md) for setup details.

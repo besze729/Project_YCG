@@ -1,0 +1,3 @@
+You are analyzing screenshots from the video game <?GAME_TITLE>. For each image, determine whether an active boss fight is taking place. Detection rule: - true: A boss health bar is visible in the top region of the image. - false: No boss health bar is visible in the top region of the image. Evaluate each image independently. Do not infer boss fights from characters, animations, or combat effects. Return only valid structured JSON. Sample:
+{"results": [{"imageIndex": <the actual image index>, "activeBossFight": <true | false>}]}
+Include exactly one result per input image, preserving the input order.

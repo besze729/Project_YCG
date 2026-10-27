@@ -27,12 +27,13 @@ sampleFrames(video, samplingConfig)
 
 ### Proxy Generation
 
-Create a 480p proxy video from the original input.
-Target bitrate: 2000Kbps (constant bitrate)
+Create a proxy video up to 1280 × 720 from the original input, preserving its
+aspect ratio (see [ADR-004](use-720p-proxy-video.md)).
+Target bitrate: 2500 kbps (constant bitrate), with a 5000 kbit rate-control buffer.
 
-The default path decodes and scales on the CPU and encodes with NVENC. An
-optional `proxy.acceleration = "cuda"` setting requests CUDA hardware decoding,
-`scale_cuda`, and NVENC encoding. Both paths retain the same proxy resolution,
+The default path uses CUDA hardware decoding, `scale_cuda`, and NVENC encoding.
+Setting `proxy.acceleration = "cpu"` decodes and scales on the CPU and can still
+encode with NVENC or, with a codec override, libx264. Both paths retain the same proxy resolution,
 H.264 output, bitrate, and source timeline. CUDA mode requires a compatible
 source decoder, FFmpeg build, NVIDIA driver, and GPU. An unsupported setup fails
 with the FFmpeg error instead of silently changing processing paths.
@@ -109,13 +110,18 @@ remain in the Python TOML configuration, with an optional `YCG_VIDEO_CONFIG`
 override loaded for each request. A disconnected controller interrupts encoding
 at the next progress callback; a disconnected frontend does not cancel the job.
 
-`POST /api/proxy` and `POST /api/sample` share one processing slot. The sample
+`POST /api/proxy`, `POST /api/sample`, and the vision module's
+`POST /api/boss-detection` share one processing slot. The sample
 endpoint accepts `gameName`, `inputVideo`, `outputDirectory`, `intervalSeconds`,
 and optional `startTime`/`endTime`. Progress identifies `operation` as `proxy`
 or `sample`; sample completion includes the frame directory and frame count.
-For Build Chapters the controller runs proxy creation then coarse sampling for
-each video sequentially. It owns the configurable coarse interval (default
-30 seconds) and records that value and both output paths in job metadata.
+For Build Chapters the controller runs proxy creation, coarse sampling, then
+batched boss fight detection for each video sequentially. It owns the configurable coarse interval (default
+30 seconds) and records that value and all stage output paths in job metadata.
+
+The vision module has its own runtime configuration and external prompt template.
+Its LM Studio adapter, batch validation and per-image JSONL persistence are separate
+from FFmpeg processing. See the Qwen3-VL ADR for this detection increment.
 
 For sparse sampling, the displayed source position is the most recent requested
 sample timestamp. A continuous completion percentage would be misleading because

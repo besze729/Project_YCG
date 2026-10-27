@@ -22,3 +22,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 video_processing_service = ["config.toml"]
+"video_processing_service.vision" = ["config.toml", "*.tpl"]

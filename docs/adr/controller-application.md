@@ -6,6 +6,9 @@
   a browser preview remains available for development.
 - **Frontend ↔ Controller:** REST + SSE for progress events
 - **AI / Vision components:** Python
+- **Current vision increment:** a separate module in the existing Python service
+  calls local LM Studio for batched boss-health-bar detection; Java sequences
+  proxy creation, sampling and detection and relays persisted progress.
 - **Python API:** FastAPI
 - **Controller ↔ Python:** REST + JSON
 - **Video processing:** Controller calls the Python Video Processing Service over

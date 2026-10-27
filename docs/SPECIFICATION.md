@@ -316,22 +316,14 @@ SOURCE VIDEO
 
 ANALYSIS PROXY
 
-1280 × 720
-or
-854 × 480
+up to 1280 × 720, preserving source aspect ratio
 
 significantly reduced bitrate
-approximately 2.5 Mbps or similar
+currently 2.5 Mbps
 ```
 
-The exact proxy parameters must be evaluated experimentally.
-
-Possible target resolutions:
-
-```text
-720p
-480p
-```
+The current default target is 720p at 2500 kbps. The exact proxy parameters
+must still be evaluated experimentally.
 
 Potentially even lower resolutions may be useful for the first coarse analysis pass if recognition accuracy remains acceptable.
 
@@ -921,10 +913,9 @@ The following require experimentation before final architectural decisions are m
 
 ### Proxy quality
 
-Determine whether:
+Evaluate whether the current 720p default offers the best trade-off against:
 
 ```text
-720p
 480p
 or lower
 ```

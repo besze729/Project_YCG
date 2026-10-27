@@ -36,7 +36,19 @@ const waitFor = async url => {
 }
 const hash = async file => createHash('sha256').update(await readFile(file)).digest('hex')
 let knowledgeCalls = 0
+const visionRequests = []
 const knowledgeServer = http.createServer(async (request, response) => {
+  if (request.url === '/v1/chat/completions' && request.method === 'POST') {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    visionRequests.push(body)
+    const indices = body.messages[1].content.filter(item => item.type === 'text').map(item => Number(item.text.split(': ')[1]))
+    const content = JSON.stringify({ results: indices.map(imageIndex => ({ imageIndex, activeBossFight: true })) })
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content } }] }))
+    return
+  }
   if (request.url !== '/api/v1/chat' || request.method !== 'POST') {
     response.writeHead(501).end(); return
   }
@@ -56,8 +68,10 @@ try {
   const badSource = path.join(work, 'bad-video.mp4')
   await writeFile(badSource, 'not a video')
   await writeFile(path.join(work, 'cpu.toml'), '[proxy]\nacceleration="cpu"\nvideo_codec="libx264"\nencoder_preset="ultrafast"\n[progress]\ninterval_seconds=0.1\n')
+  await writeFile(path.join(work, 'vision.toml'), `[vision]\nbase_url="http://127.0.0.1:${knowledgeServer.address().port}"\n`)
   start(path.join(software, 'video-processing-service/.venv/Scripts/python.exe'), ['-m', 'video_processing_service.api'], {
     YCG_VIDEO_PORT: '18090', YCG_VIDEO_CONFIG: path.join(work, 'cpu.toml'),
+    YCG_VISION_CONFIG: path.join(work, 'vision.toml'), LM_STUDIO_API_TOKEN: '',
   })
   start('java', ['-jar', path.join(software, 'controller-application/backend/target/controller-backend-0.0.1-SNAPSHOT.jar')], {
     SERVER_PORT: '18080', YCG_VIDEO_SERVICE_URL: 'http://127.0.0.1:18090', YCG_PROXY_OUTPUT_ROOT: path.join(work, 'jobs'),
@@ -78,6 +92,14 @@ try {
   })
   assert.equal(code, 0)
   assert.equal(knowledgeCalls, 2, 'Cancellation must not invoke AI; confirmed rebuild must invoke it once')
+  assert.equal(visionRequests.length, 2)
+  for (const request of visionRequests) {
+    assert.equal(request.model, 'qwen3-vl-8b-instruct')
+    assert.ok(request.messages[0].content.includes('video game Smoke game.'))
+    assert.ok(!request.messages[0].content.includes('<?GAME_TITLE>'))
+    assert.equal(request.messages[1].content.filter(item => item.type === 'image_url').length, 1)
+    assert.equal(request.response_format.type, 'json_schema')
+  }
   const knowledge = JSON.parse(await readFile(path.join(work, 'knowledge-base', 'Smoke game.json'), 'utf8'))
   assert.equal(knowledge.bosses[0].displayName, 'Test boss 2')
   const ids = await readdir(path.join(work, 'jobs'))
@@ -100,33 +122,41 @@ try {
     assert.equal(await hash(sources[i]), originalHashes[i])
     assert.ok(events.some(event => event.videoIndex === i && event.command?.includes(sources[i])))
     assert.ok(events.some(event => event.videoIndex === i && event.state === 'running' && event.fps != null))
-    const info = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,height,duration', '-of', 'json', job.videos[i].outputPath], { windowsHide: true, encoding: 'utf8' }))
+    const info = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,width,height,duration', '-of', 'json', job.videos[i].outputPath], { windowsHide: true, encoding: 'utf8' }))
     assert.equal(info.streams[0].codec_name, 'h264')
-    assert.equal(info.streams[0].height, 480)
+    assert.equal(info.streams[0].width, 1280)
+    assert.equal(info.streams[0].height, 720)
     assert.equal(Number(info.streams[0].duration), 4)
     const frameFiles = await readdir(job.videos[i].framesDirectory)
     assert.deepEqual(frameFiles, ['frame_000000_00-00-00.000.jpg'])
-    const frame = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,height', '-of', 'json',
+    const frame = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,width,height', '-of', 'json',
       path.join(job.videos[i].framesDirectory, frameFiles[0])], { windowsHide: true, encoding: 'utf8' }))
     assert.equal(frame.streams[0].codec_name, 'mjpeg')
-    assert.equal(frame.streams[0].height, 480)
+    assert.equal(frame.streams[0].width, 1280)
+    assert.equal(frame.streams[0].height, 720)
     const sampling = events.filter(event => event.videoIndex === i && event.operation === 'sample')
     assert.ok(sampling.some(event => event.command?.includes(job.videos[i].outputPath)))
     assert.ok(sampling.some(event => event.state === 'running' && event.total_frames === 1 && event.percent === null))
     assert.equal(sampling.at(-1).state, 'completed')
     assert.equal(sampling.at(-1).frame_count, 1)
     assert.equal(sampling.at(-1).outputDirectory, job.videos[i].framesDirectory)
+    const detections = (await readFile(job.videos[i].bossDetectionsPath, 'utf8')).trim().split('\n').map(JSON.parse)
+    assert.deepEqual(detections, [{ imageIndex: 0, frameFile: frameFiles[0], sourceTimestampMs: 0, activeBossFight: true }])
+    const detectionEvents = events.filter(event => event.videoIndex === i && event.operation === 'boss-detection')
+    assert.match(detectionEvents[0].promptSha256, /^[a-f0-9]{64}$/)
+    assert.equal(detectionEvents.at(-1).state, 'completed')
+    assert.equal(detectionEvents.at(-1).outputFile, job.videos[i].bossDetectionsPath)
   }
   assert.deepEqual(events.filter(event => event.state === 'completed').map(event => [event.videoIndex, event.operation]),
-    [[0, 'proxy'], [0, 'sample'], [1, 'proxy'], [1, 'sample']])
+    [[0, 'proxy'], [0, 'sample'], [0, 'boss-detection'], [1, 'proxy'], [1, 'sample'], [1, 'boss-detection']])
   assert.equal(events.at(-1).state, 'job_completed')
   assert.deepEqual((await readdir(path.join(work, 'jobs', id))).sort(),
-    ['0001-frames', '0001-proxy.mp4', '0002-frames', '0002-proxy.mp4', 'events.jsonl', 'job.json'])
+    ['0001-boss-detections.jsonl', '0001-frames', '0001-proxy.mp4', '0002-boss-detections.jsonl', '0002-frames', '0002-proxy.mp4', 'events.jsonl', 'job.json'])
   assert.equal(failed.data.videos[0].inputPath, badSource)
   const failureEvents = (await readFile(path.join(work, 'jobs', failed.id, 'events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse)
   assert.equal(failureEvents.filter(event => event.state === 'failed').length, 1)
   assert.equal(failureEvents.at(-1).state, 'job_failed')
-  console.log('LIVE_INTEGRATION_OK: knowledge save/path/cancel/rebuild, missing-knowledge gate, timestamped JPEGs, replay and failure reporting')
+  console.log('LIVE_INTEGRATION_OK: knowledge gate, timestamped JPEGs, vision requests, detection JSONL, replay and failure reporting')
   console.log('Artifacts: ' + work)
 } catch (error) {
   console.error(logs.join(''))

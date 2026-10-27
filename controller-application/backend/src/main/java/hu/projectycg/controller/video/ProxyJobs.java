@@ -47,7 +47,8 @@ public class ProxyJobs {
         samplingIntervalSeconds = properties.samplingIntervalSeconds();
     }
 
-    public record Video(String name, String inputPath, String outputPath, String framesDirectory) {}
+    public record Video(String name, String inputPath, String outputPath, String framesDirectory,
+                        String bossDetectionsPath) {}
 
     public final class Job {
         final String id;
@@ -155,7 +156,8 @@ public class ProxyJobs {
                 Path source = sources.get(i);
                 videos.add(new Video(source.getFileName().toString(), source.toString(),
                         directory.resolve(String.format("%04d-proxy.mp4", i + 1)).toString(),
-                        directory.resolve(String.format("%04d-frames", i + 1)).toString()));
+                        directory.resolve(String.format("%04d-frames", i + 1)).toString(),
+                        directory.resolve(String.format("%04d-boss-detections.jsonl", i + 1)).toString()));
             }
             var job = new Job(id, request.path("gameName").asString().strip(), List.copyOf(videos), directory,
                     samplingIntervalSeconds);
@@ -179,8 +181,11 @@ public class ProxyJobs {
                 stage = video.name() + ": frame sampling";
                 client.sampleFrames(job.gameName, Path.of(video.outputPath()), Path.of(video.framesDirectory()),
                         job.samplingIntervalSeconds, event -> relay(job, videoIndex, video, "sample", event));
+                stage = video.name() + ": boss fight detection";
+                client.detectBossFights(job.gameName, Path.of(video.framesDirectory()), Path.of(video.bossDetectionsPath()),
+                        event -> relay(job, videoIndex, video, "boss-detection", event));
             }
-            finish(job, "completed", "All proxy videos and sampled frames are ready.");
+            finish(job, "completed", "All videos have been sampled and analyzed for boss fights.");
         } catch (Exception ex) {
             finish(job, "failed", stage + " failed: " + ex.getMessage());
         } finally { busy.set(false); }
