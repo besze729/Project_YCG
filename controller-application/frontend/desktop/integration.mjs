@@ -149,6 +149,7 @@ try {
     const refinement = JSON.parse(await readFile(path.join(job.videos[i].bossRefinementDirectory, 'boss-intervals.json'), 'utf8'))
     assert.deepEqual(refinement.intervals, [{ startMs: 0, startBoundary: null, startClipped: true,
       endMs: 4000, endBoundary: null, endClipped: true }])
+    assert.equal(await readFile(path.join(job.videos[i].bossRefinementDirectory, 'youtube-chapters.txt'), 'utf8'), '00:00 BOSS_FIGHT\n')
     assert.ok(events.some(event => event.videoIndex === i && event.state === 'interval'
       && event.message.includes('Boss fight #1: 00:00:00.000 -> 00:00:04.000')))
   }
@@ -163,7 +164,7 @@ try {
   const failureEvents = (await readFile(path.join(work, 'jobs', failed.id, 'events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse)
   assert.equal(failureEvents.filter(event => event.state === 'failed').length, 1)
   assert.equal(failureEvents.at(-1).state, 'job_failed')
-  console.log('LIVE_INTEGRATION_OK: knowledge gate, timestamped JPEGs, vision requests, refinement, interval logs, replay and failure reporting')
+  console.log('LIVE_INTEGRATION_OK: chapter exports, result window, video selection, warnings, replay, refinement and failure reporting')
   console.log('Artifacts: ' + work)
 } catch (error) {
   console.error(logs.join(''))

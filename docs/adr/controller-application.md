@@ -10,6 +10,9 @@
   calls local LM Studio for batched boss-health-bar detection; Java sequences
   proxy creation, sampling, detection and boundary refinement and relays persisted
   progress and final interval logs. Python owns temporal refinement and aggregation.
+- **Chapter export:** Java deterministically formats persisted intervals into
+  full-timeline placeholder chapters; React presents the plain text in a separate
+  sandboxed result window. This introduces no additional model call or service.
 - **Python API:** FastAPI
 - **Controller ↔ Python:** REST + JSON
 - **Video processing:** Controller calls the Python Video Processing Service over

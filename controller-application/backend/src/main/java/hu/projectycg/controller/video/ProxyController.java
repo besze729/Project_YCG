@@ -25,6 +25,11 @@ public class ProxyController {
     @GetMapping("/{id}")
     public JsonNode get(@PathVariable String id) throws IOException { return jobs.get(id).snapshot(); }
 
+    @GetMapping("/{id}/results")
+    public ResponseEntity<JsonNode> results(@PathVariable String id) throws IOException {
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(jobs.results(id));
+    }
+
     @GetMapping(value = "/{id}/events", produces = "text/event-stream")
     public ResponseEntity<StreamingResponseBody> events(@PathVariable String id,
             @RequestHeader(value = "Last-Event-ID", defaultValue = "0") long after) throws IOException {

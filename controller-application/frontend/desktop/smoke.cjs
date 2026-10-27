@@ -12,7 +12,7 @@ app.whenReady().then(async () => {
   registerProtocol()
   const window = createWindow({ show: false })
   const wc = window.webContents
-  const evaluate = code => wc.executeJavaScript(code)
+  const evaluate = code => wc.executeJavaScript(code, true)
   const waitFor = async (code, target = wc) => {
     const until = Date.now() + 60000
     while (Date.now() < until) {
@@ -23,6 +23,7 @@ app.whenReady().then(async () => {
   }
   try {
     await waitFor('!!document.querySelector("#action")')
+    assert.equal(await evaluate(`document.querySelector('#show-result')`), null)
     await evaluate(`document.querySelector('#action').value='chapters'; document.querySelector('#action').dispatchEvent(new Event('change', {bubbles:true}))`)
     await waitFor(`!!document.querySelector('input[type=file]')`)
     assert.equal(await evaluate(`document.querySelector('.video-footer button').disabled`), true)
@@ -66,7 +67,7 @@ app.whenReady().then(async () => {
     await evaluate(`document.querySelector('#action').value='chapters'; document.querySelector('#action').dispatchEvent(new Event('change', {bubbles:true}))`)
     await waitFor(`!!document.querySelector('.video-footer button')`)
     await evaluate(`document.querySelector('.video-footer button').click()`)
-    await waitFor(`document.body.innerText.includes('Boss fight intervals have been determined for all videos.')`)
+    await waitFor(`document.body.innerText.includes('YouTube chapters are ready for all videos.') && !!document.querySelector('#show-result')`)
     const text = await evaluate('document.body.innerText')
     assert.equal((text.match(/FFmpeg command:/g) || []).length, 6)
     assert.ok(text.includes('proxy ready'))
@@ -74,9 +75,28 @@ app.whenReady().then(async () => {
     assert.equal((text.match(/boss fight analysis ready \(1 frames\)/g) || []).length, 2)
     assert.equal((text.match(/Boss fight #1: 00:00:00.000 -> 00:00:04.000/g) || []).length, 2)
     assert.equal(await evaluate(`document.querySelector('.video-footer button').disabled`), false)
+    const resultCreated = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Result window was not created')), 10000)
+      wc.once('did-create-window', child => { clearTimeout(timeout); resolve(child) })
+    })
+    console.log('Opening chapter result window')
+    await evaluate(`document.querySelector('#show-result').click()`)
+    const resultWindow = await resultCreated
+    console.log('Chapter result window created: ' + resultWindow.webContents.getURL())
+    resultWindow.webContents.on('did-fail-load', (_event, code, description) => console.error('Result load failed: ' + code + ' ' + description))
+    resultWindow.webContents.on('dom-ready', () => console.log('Chapter result DOM ready'))
+    await waitFor(`!!document.querySelector('#chapter-text')`, resultWindow.webContents)
+    assert.equal(await resultWindow.webContents.executeJavaScript(`document.querySelector('#chapter-text').value`), '00:00 BOSS_FIGHT\n')
+    assert.equal(await resultWindow.webContents.executeJavaScript(`document.querySelectorAll('#result-video option').length`), 2)
+    assert.ok(await resultWindow.webContents.executeJavaScript(`document.querySelector('.result-warnings').innerText.includes('10-second')`))
+    await resultWindow.webContents.executeJavaScript(`document.querySelector('#result-video').value='1'; document.querySelector('#result-video').dispatchEvent(new Event('change', {bubbles:true}))`)
+    await waitFor(`document.querySelector('#result-video').value === '1'`, resultWindow.webContents)
+    assert.equal(await resultWindow.webContents.executeJavaScript(`document.querySelector('#chapter-text').value`), '00:00 BOSS_FIGHT\n')
+    if (process.env.YCG_SMOKE_SCREENSHOT) await fs.writeFile(process.env.YCG_SMOKE_SCREENSHOT.replace('.png', '-result.png'), (await resultWindow.webContents.capturePage()).toPNG())
+    resultWindow.close()
     // Page reload must replay the persisted commands and terminal state.
     wc.reload()
-    await waitFor(`document.body.innerText.includes('Boss fight intervals have been determined for all videos.')`)
+    await waitFor(`document.body.innerText.includes('YouTube chapters are ready for all videos.') && !!document.querySelector('#show-result')`)
     const replayed = await evaluate('document.body.innerText')
     assert.equal((replayed.match(/FFmpeg command:/g) || []).length, 6)
     assert.equal((replayed.match(/sampled frames ready \(1\)/g) || []).length, 2)
@@ -91,7 +111,8 @@ app.whenReady().then(async () => {
     assert.ok(oldJobId)
     assert.ok(freshText.includes('Workspace ready.'))
     assert.ok(!freshText.includes('Video preprocessing started.'))
-    assert.ok(!freshText.includes('Boss fight intervals have been determined for all videos.'))
+    assert.ok(!freshText.includes('YouTube chapters are ready for all videos.'))
+    assert.equal(await fresh.webContents.executeJavaScript(`document.querySelector('#show-result')`), null)
     fresh.close()
     // A failed video emits both a stage failure and a terminal job failure.
     // The activity log should show one error while the journal retains both.
@@ -104,6 +125,7 @@ app.whenReady().then(async () => {
     await waitFor(`document.querySelectorAll('.video-list li').length===1 && !document.querySelector('.video-footer button').disabled`)
     await evaluate(`document.querySelector('.video-footer button').click()`)
     await waitFor(`document.body.innerText.includes('bad-video.mp4: proxy creation failed:') && !document.querySelector('.video-footer button').disabled`)
+    assert.equal(await evaluate(`document.querySelector('#show-result')`), null)
     const errors = await evaluate(`Array.from(document.querySelectorAll('.log-entry')).filter(entry => entry.querySelector('.log-level')?.textContent === 'error').map(entry => entry.querySelector('.log-message')?.textContent)`)
     assert.equal(errors.filter(message => message.includes('bad-video.mp4')).length, 1)
     if (process.env.YCG_SMOKE_SCREENSHOT) {

@@ -44,6 +44,7 @@ export default function App() {
   const [dragging, setDragging] = useState(false)
   const [isBuilding, setIsBuilding] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [resultJobId, setResultJobId] = useState<string | null>(null)
   const [overwritePrompt, setOverwritePrompt] = useState<{
     title: string; path: string; resolve: (confirmed: boolean) => void
   } | null>(null)
@@ -115,6 +116,8 @@ export default function App() {
         log(event.state === 'job_failed' ? 'error' : event.state === 'job_completed' ? 'success' : 'info', event.message, `${id}:${event.id}`)
       }
       if (event.state === 'job_completed' || event.state === 'job_failed') {
+        if (event.state === 'job_completed' && event.resultsAvailable) setResultJobId(id)
+        if (event.state === 'job_failed') setResultJobId(null)
         eventStream.current?.close()
         localStorage.removeItem('ycg.lastProxyJob')
         setIsProcessing(false)
@@ -144,6 +147,7 @@ export default function App() {
           log('info', `Following an earlier preprocessing job for "${job.gameName}".`)
         }
         setIsProcessing(job.state === 'running')
+        if (job.state === 'completed' && job.resultsAvailable) setResultJobId(id)
         buildInFlight.current = job.state === 'running'
         followJob(id, !currentSessionId)
       }).catch(error => {
@@ -161,6 +165,7 @@ export default function App() {
     if (!title || videos.length === 0 || buildInFlight.current) return
     buildInFlight.current = true
     setIsProcessing(true)
+    setResultJobId(null)
     log('info', `Checking prerequisites for "${title}" (${videos.length} videos).`)
     try {
       const job = await startProxyJob(title, videos.map(video => video.path))
@@ -368,7 +373,15 @@ export default function App() {
         <section className="activity-panel" aria-labelledby="activity-title">
           <div className="section-heading activity-heading">
             <div className="heading-group"><Icon name="terminal" width="18" height="18" /><h2 id="activity-title">Activity log</h2><span className="log-count">{logs.length}</span></div>
-            <button className="text-button" type="button" disabled={logs.length === 0} onClick={() => { setLogs([]); followLogs.current = true }}>Clear log</button>
+            <div className="activity-actions">
+              {resultJobId && <button id="show-result" className="primary-button" type="button"
+                onClick={() => {
+                  if (!window.open(`/?result=${encodeURIComponent(resultJobId)}`, '_blank', 'width=820,height=740')) {
+                    log('error', 'Could not open the result window. Allow popups for this application and try again.')
+                  }
+                }}>Show result</button>}
+              <button className="text-button" type="button" disabled={logs.length === 0} onClick={() => { setLogs([]); followLogs.current = true }}>Clear log</button>
+            </div>
           </div>
           <div className="log-panel" ref={logPanel} role="log" aria-label="Workspace activity" aria-live="polite" aria-relevant="additions" tabIndex={0} onScroll={event => { const panel = event.currentTarget; followLogs.current = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 32 }}>
             {logs.length === 0 ? <p className="log-empty">No activity yet. New updates will appear here.</p> : logs.map(entry => (

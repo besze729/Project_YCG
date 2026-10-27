@@ -121,7 +121,7 @@ Video stage states are `started`,
 One batch runs at a time, with each video processed as proxy creation, full-video
 sampling, boss fight detection, then boundary refinement before starting the next video. A failed stage
 stops the batch; completed preprocessing and partial detection results are retained.
-The batch completes only after all four stages finish for every video.
+The batch completes only after all four processing stages and chapter formatting finish for every video.
 Commands and events are saved alongside `0001-proxy.mp4`, `0001-frames/`, and
 `0001-boss-detections.jsonl` and `0001-boss-refinement/` in `YCG_PROXY_OUTPUT_ROOT/<jobId>/`. Reloading the
 current page reconnects to its job. Controller restarts mark unfinished jobs as
@@ -144,13 +144,65 @@ contains `boss-intervals.json` plus intermediate evidence. See the
 [refinement contract](../video-processing-service/README.md#boss-fight-boundary-refinement).
 Final intervals are logged in time order to the Java console and persisted SSE
 `state: "interval"` messages for Activity log replay. Empty results are explicit;
-video-edge intervals are marked as clipped. OCR and chapter generation remain deferred.
+video-edge intervals are marked as clipped. Java then formats and saves the plain
+YouTube chapter list. Boss-name OCR and richer chapter labels remain deferred.
 Python responds
 with `application/x-ndjson`, one progress object per line, plus idle heartbeats.
 The controller relays these through SSE. The `command` array is the actual
 process argument list; `commandLine` is its platform-specific display form.
 Stage completion is sent only after its output is published. Unexpected EOF and an
 unreachable Python service become failed job events.
+
+### Chapter results
+
+Successful jobs expose `resultsAvailable: true` in the job snapshot and terminal
+SSE event. Each video also emits `state: "chapters_ready"` after writing
+`youtube-chapters.txt` atomically inside its refinement directory. Results become
+visible only after the entire job succeeds. The **Show result** button opens a
+separate Electron window; multiple videos have a selector, with one pure chapter
+list in the selectable textarea. The button is restored on current-session reload
+and cleared when another Process attempt begins. The result window permits no
+external navigation or additional popups.
+
+`GET /api/chapters/jobs/{jobId}/results` returns:
+
+```json
+{
+  "jobId": "...",
+  "gameName": "Mortal Shell",
+  "videos": [{
+    "videoIndex": 0,
+    "videoName": "gameplay.mp4",
+    "durationMs": 120000,
+    "chapters": [
+      {"startSeconds": 0, "title": "Exploration"},
+      {"startSeconds": 21, "title": "BOSS_FIGHT"},
+      {"startSeconds": 90, "title": "Exploration"}
+    ],
+    "text": "00:00 Exploration\n00:21 BOSS_FIGHT\n01:30 Exploration\n",
+    "warnings": []
+  }]
+}
+```
+
+The endpoint reads saved version-1 interval artifacts and formats them without
+model calls or writes, including for older completed jobs that have interval
+artifacts but no text export. Running/failed jobs return 409; unknown jobs or
+missing artifacts return 404; unreadable/invalid evidence returns 500.
+
+Each list begins at zero, uses `MM:SS` below one hour and `H:MM:SS` thereafter,
+and contains only state changes. Fight-free videos produce `00:00 Exploration`;
+a fight starting at zero produces `00:00 BOSS_FIGHT`. There is no end-of-video
+marker and no artificial split inside a continuous Exploration section.
+Fractional boundaries are rounded down for whole-second export only; at a
+timestamp collision the later transition wins, and adjacent equal labels are
+combined. The original millisecond intervals are never modified.
+
+[YouTube requires](https://support.google.com/youtube/answer/9884579?hl=en) at least
+three chapters, starting at 00:00, each at least ten seconds long. The user chose
+to preserve the detected timeline even when these criteria are unmet. Warnings,
+including fractional-timestamp rounding when applicable, appear outside the pure
+textarea. No chapter is padded or merged to meet the ten-second minimum.
 
 Configuration: `YCG_VIDEO_SERVICE_URL` defaults to `http://127.0.0.1:8090` and
 `YCG_PROXY_OUTPUT_ROOT` to `./data/proxy-jobs` relative to the backend working

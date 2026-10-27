@@ -3,6 +3,7 @@ export type ProxyJob = {
   gameName: string
   state: 'running' | 'completed' | 'failed'
   message: string
+  resultsAvailable?: boolean
   samplingIntervalSeconds?: number | null
   videos: { name: string; inputPath: string; outputPath: string; framesDirectory?: string | null; bossDetectionsPath?: string | null; bossRefinementDirectory?: string | null }[]
 }
@@ -10,8 +11,9 @@ export type ProxyJob = {
 export type ProxyEvent = {
   id: number
   jobId: string
-  state: 'started' | 'running' | 'completed' | 'failed' | 'interval' | 'job_started' | 'job_completed' | 'job_failed'
+  state: 'started' | 'running' | 'completed' | 'failed' | 'interval' | 'chapters_ready' | 'job_started' | 'job_completed' | 'job_failed'
   message: string
+  resultsAvailable?: boolean
   videoIndex?: number
   videoName?: string
   operation?: 'proxy' | 'sample' | 'boss-detection' | 'boss-refinement'
@@ -55,6 +57,25 @@ export async function startProxyJob(gameName: string, videos: string[]): Promise
 
 export async function getProxyJob(id: string): Promise<ProxyJob> {
   return readJob(await fetch(`/api/chapters/jobs/${encodeURIComponent(id)}`))
+}
+
+export type ChapterResults = {
+  jobId: string
+  gameName: string
+  videos: { videoIndex: number; videoName: string; durationMs: number; text: string; warnings: string[] }[]
+}
+
+export async function getChapterResults(id: string, signal?: AbortSignal): Promise<ChapterResults> {
+  const response = await fetch(`/api/chapters/jobs/${encodeURIComponent(id)}/results`, { signal })
+  let body
+  try { body = await response.json() }
+  catch { throw new Error(`Controller returned an unreadable result (HTTP ${response.status}).`) }
+  if (!response.ok) throw new Error(body.message || `Could not load results (HTTP ${response.status}).`)
+  if (!Array.isArray(body.videos) || body.videos.length === 0 || body.videos.some((video: ChapterResults['videos'][number]) =>
+    typeof video.text !== 'string' || typeof video.videoName !== 'string' || !Array.isArray(video.warnings))) {
+    throw new Error('Controller returned invalid chapter results.')
+  }
+  return body
 }
 
 export function watchProxyJob(id: string, receive: (event: ProxyEvent) => void,

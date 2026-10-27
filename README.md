@@ -28,5 +28,7 @@ See the [controller guide](controller-application/README.md) for setup details.
 Process creates a 720p proxy, detects boss health bars in coarse sampled frames,
 then refines observed start/end boundaries at 5-second and 1-second spacing.
 Derived intervals appear in the backend console and Activity log and are saved
-with their evidence under each job's `*-boss-refinement/` directory. Boss naming
-and chapter generation remain later steps.
+with their evidence under each job's `*-boss-refinement/` directory. Each video
+also receives a plain `youtube-chapters.txt` export covering the full timeline
+with `Exploration` and `BOSS_FIGHT` labels. After success, **Show result** opens
+the copyable chapter list in a separate window. Boss naming remains a later step.

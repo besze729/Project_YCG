@@ -71,7 +71,13 @@ public class ProxyJobs {
                     .put("state", state).put("message", message);
             result.set("videos", mapper.valueToTree(videos));
             result.put("samplingIntervalSeconds", samplingIntervalSeconds);
+            result.put("resultsAvailable", "completed".equals(state) && hasIntervalArtifacts());
             return result;
+        }
+
+        private boolean hasIntervalArtifacts() {
+            return !videos.isEmpty() && videos.stream().allMatch(video -> video.bossRefinementDirectory() != null
+                    && Files.isRegularFile(Path.of(video.bossRefinementDirectory()).resolve("boss-intervals.json")));
         }
 
         synchronized void save() throws IOException {
@@ -190,8 +196,16 @@ public class ProxyJobs {
                 client.refineBossFights(job.gameName, Path.of(video.outputPath()), Path.of(video.bossDetectionsPath()),
                         Path.of(video.bossRefinementDirectory()),
                         event -> relay(job, videoIndex, video, "boss-refinement", event));
+                stage = video.name() + ": chapter formatting";
+                var result = chapters(video);
+                Path export = Path.of(video.bossRefinementDirectory()).resolve("youtube-chapters.txt");
+                Path temporary = export.resolveSibling("youtube-chapters.txt.tmp");
+                Files.writeString(temporary, result.text(), StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
+                Files.move(temporary, export, StandardCopyOption.ATOMIC_MOVE);
+                job.emit(mapper.createObjectNode().put("state", "chapters_ready").put("videoIndex", index)
+                        .put("videoName", video.name()).put("message", video.name() + ": YouTube chapters ready."));
             }
-            finish(job, "completed", "Boss fight intervals have been determined for all videos.");
+            finish(job, "completed", "YouTube chapters are ready for all videos.");
         } catch (Exception ex) {
             finish(job, "failed", stage + " failed: " + ex.getMessage());
         } finally { busy.set(false); }
@@ -248,7 +262,8 @@ public class ProxyJobs {
             job.message = message;
             // Write the terminal event before readers observe a terminal state.
             try {
-                job.emit(mapper.createObjectNode().put("state", "job_" + state).put("message", message));
+                job.emit(mapper.createObjectNode().put("state", "job_" + state).put("message", message)
+                        .put("resultsAvailable", "completed".equals(state) && job.hasIntervalArtifacts()));
             } finally { job.state = state; }
             try { job.save(); }
             catch (IOException ex) { throw new UncheckedIOException(ex); }
@@ -275,6 +290,30 @@ public class ProxyJobs {
         if ("running".equals(job.state)) finish(job, "failed", "Controller restarted; processing was interrupted. Completed proxies and frame directories are retained.");
         jobs.put(id, job);
         return job;
+    }
+
+    private YoutubeChapters.Result chapters(Video video) throws IOException {
+        try {
+            return YoutubeChapters.generate(mapper.readTree(Files.readString(
+                    Path.of(video.bossRefinementDirectory()).resolve("boss-intervals.json"), StandardCharsets.UTF_8)));
+        } catch (IllegalArgumentException ex) {
+            throw new IOException("Invalid boss intervals for " + video.name() + ": " + ex.getMessage(), ex);
+        }
+    }
+
+    public ObjectNode results(String id) throws IOException {
+        var job = get(id);
+        if (!"completed".equals(job.state)) throw error(HttpStatus.CONFLICT, "Results are available only after successful processing.");
+        if (!job.hasIntervalArtifacts()) throw error(HttpStatus.NOT_FOUND, "This job has no saved boss interval results.");
+        var response = mapper.createObjectNode().put("jobId", job.id).put("gameName", job.gameName);
+        var videos = response.putArray("videos");
+        for (int index = 0; index < job.videos.size(); index++) {
+            var video = job.videos.get(index);
+            var result = (ObjectNode) mapper.valueToTree(chapters(video));
+            result.put("videoIndex", index).put("videoName", video.name());
+            videos.add(result);
+        }
+        return response;
     }
 
     private static ResponseStatusException error(HttpStatus status, String message) {

@@ -7,6 +7,7 @@ import hu.projectycg.controller.knowledge.KnowledgeBaseException;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
@@ -79,6 +80,17 @@ class ProxyJobsTests {
                 if (!sample && !detection && !refinement && code == 200 && content.contains("completed")) {
                     Files.writeString(Path.of(body.path("outputVideo").asString()), "published proxy");
                 }
+                if (refinement && code == 200) {
+                    for (String line : content.split("\n")) {
+                        var event = mapper.readTree(line);
+                        if (event.path("state").asString().equals("completed") && event.path("intervals").isArray()) {
+                            Path directory = Files.createDirectories(Path.of(body.path("outputDirectory").asString()));
+                            var artifact = mapper.createObjectNode().put("schemaVersion", 1).put("durationMs", 60000);
+                            artifact.set("intervals", event.path("intervals"));
+                            Files.writeString(directory.resolve("boss-intervals.json"), artifact.toString());
+                        }
+                    }
+                }
                 exchange.getResponseBody().write(content.getBytes(StandardCharsets.UTF_8));
             } catch (InterruptedException ex) { Thread.currentThread().interrupt(); }
             finally { exchange.close(); }
@@ -131,6 +143,45 @@ class ProxyJobsTests {
         await(failed);
         assertThat(failed.state).isEqualTo("failed");
         assertThat(failed.message).contains("missing intervals");
+    }
+
+    @Test void exposesSavedChapterResultsAndSupportsReloadedJobs() throws Exception {
+        var mvc = MockMvcBuilders.standaloneSetup(new ProxyController(jobs)).build();
+        var job = jobs.start(request("Game", source("one.mp4"), source("two.mp4")));
+        await(job);
+        assertThat(job.snapshot().path("resultsAvailable").asBoolean()).isTrue();
+        mvc.perform(get("/api/chapters/jobs/{id}/results", job.id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.videos.length()").value(2))
+                .andExpect(jsonPath("$.videos[0].videoName").value("one.mp4"))
+                .andExpect(jsonPath("$.videos[0].text").value("00:00 Exploration\n00:08 BOSS_FIGHT\n00:42 Exploration\n"));
+        assertThat(Files.readString(Path.of(job.videos.get(0).bossRefinementDirectory()).resolve("youtube-chapters.txt")))
+                .isEqualTo(jobs.results(job.id).path("videos").get(0).path("text").asString());
+        try (var restarted = new AutoCloseable() {
+            final ProxyJobs loaded = new ProxyJobs(new VideoProcessingClient(properties), properties, knowledgeBase);
+            public void close() { loaded.shutdown(); }
+        }) {
+            assertThat(restarted.loaded.get(job.id).snapshot().path("resultsAvailable").asBoolean()).isTrue();
+            assertThat(restarted.loaded.results(job.id)).isEqualTo(jobs.results(job.id));
+            // Older completed jobs with intervals but without a text export need no model calls.
+            Files.delete(Path.of(job.videos.get(0).bossRefinementDirectory()).resolve("youtube-chapters.txt"));
+            assertThat(restarted.loaded.results(job.id).path("videos").size()).isEqualTo(2);
+        }
+        Files.delete(Path.of(job.videos.get(0).bossRefinementDirectory()).resolve("boss-intervals.json"));
+        mvc.perform(get("/api/chapters/jobs/{id}/results", job.id)).andExpect(status().isNotFound());
+    }
+
+    @Test void rejectsResultsWhileRunningOrFailed() throws Exception {
+        sampleRelease = new CountDownLatch(1);
+        var job = jobs.start(request("Game", source("one.mp4")));
+        assertThat(sampleEntered.await(3, TimeUnit.SECONDS)).isTrue();
+        var mvc = MockMvcBuilders.standaloneSetup(new ProxyController(jobs)).build();
+        mvc.perform(get("/api/chapters/jobs/{id}/results", job.id)).andExpect(status().isConflict());
+        refinementResponse = "{\"state\":\"failed\",\"detail\":\"test\"}\n";
+        sampleRelease.countDown();
+        await(job);
+        assertThat(job.snapshot().path("resultsAvailable").asBoolean()).isFalse();
+        mvc.perform(get("/api/chapters/jobs/{id}/results", job.id)).andExpect(status().isConflict());
     }
 
     @Test void missingKnowledgeBasePreventsJobCreationAndDownstreamCalls() throws Exception {

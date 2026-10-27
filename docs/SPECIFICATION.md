@@ -823,6 +823,25 @@ The eventual user experience should be approximately:
 
 The result should require minimal editing before being pasted into a YouTube description.
 
+### Initial boss-only chapter export
+
+For the current incremental implementation, cover each video's complete timeline
+with `BOSS_FIGHT` for detected fight intervals and `Exploration` for their
+complement. `Exploration` is a placeholder label, not a location or gameplay-state
+recognition result. Emit a chapter at time zero and at each label change, with
+whole-second YouTube timestamps. Do not append an empty chapter at the video end.
+
+After successful processing, show a **Show result** button. It opens a separate
+window containing the plain chapter list in a selectable textarea. For multiple
+videos, display one video's list at a time with a video selector. Filenames,
+explanations and validation notes must remain outside the copyable chapter text.
+
+Preserve detected boundaries rather than extending or merging short sections to
+meet YouTube's chapter-count or minimum-duration requirements. Report those limits
+separately from the text. Original millisecond interval evidence remains unchanged;
+the export uses whole seconds, resolving timestamp collisions without duplicate
+or zero-length chapters. Boss names and richer chapter labels remain later work.
+
 ---
 
 # 21. Initial Functional Requirements
