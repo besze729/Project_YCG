@@ -45,8 +45,30 @@ with `<?GAME_TITLE>` substitution; capture that prompt and the separate vision
 configuration once per run. Preserve successful batches in timestamped JSONL;
 publish a final file only on full success and retain partial data on failure.
 
-This increment stops at per-image predictions. Refinement, OCR and knowledge
-matching below describe later work, not behavior already provided by Process.
+The first increment produces per-image predictions, consumed by the refinement
+increment below. OCR and knowledge matching remain later work.
+
+### Implemented second increment: boundary refinement
+
+Keep deterministic boundary search and interval aggregation beside the vision
+adapter in Python; Java adds a single refinement stage after coarse detection.
+This reuses local FFmpeg range sampling and avoids moving image/time-window
+management into the controller. No new deployed service is introduced.
+
+Refine only adjacent differing predictions: sample new interior frames every
+5 seconds, then refine every resulting transition every 1 second. Reuse existing
+endpoint predictions and preserve additional transitions, with no implicit gap
+merging. Use the same external detection prompt and batch configuration, captured
+once for both refinement passes. Keep raw window predictions separate from the
+derived interval artifact and record model/prompt metadata.
+
+Choose `[first positive, first following negative)` boundaries and retain their
+uncertainty brackets. Video edges are explicitly clipped, and an active final
+coarse sample triggers tail analysis. Persist final intervals atomically and log
+them through the controller's console and replayable UI events. This adds temporal
+precision, not a guarantee of visual classification accuracy: short fights hidden
+between equal coarse states can still be missed. Partial evidence remains useful
+for inspection; automatic resume and OCR remain out of scope for this increment.
 
 ### Boss Name Recognition
 

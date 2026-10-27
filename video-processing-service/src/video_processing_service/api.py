@@ -19,6 +19,7 @@ from .config import load_config
 from .service import ProcessingProgress, SamplingConfig, create_proxy, sample_frames
 from .vision.config import load_vision_config
 from .vision.detection import detect_frames, partial_path
+from .vision.refinement import refine_boundaries
 
 
 class GameRequest(BaseModel):
@@ -40,6 +41,11 @@ class VideoRequest(GameRequest):
 class DetectionRequest(GameRequest):
     framesDirectory: str
     outputFile: str
+
+
+class RefinementRequest(VideoRequest):
+    detectionsFile: str
+    outputDirectory: str
 
 
 class ProxyRequest(VideoRequest):
@@ -100,6 +106,34 @@ def create_app() -> FastAPI:
         def work(emit, disconnected):
             detect_frames(body.gameName, directory, output, config, api_token=token,
                           on_progress=emit, cancelled=disconnected)
+
+        return stream_processing(work, context)
+
+    @app.post("/api/boss-refinement", response_class=StreamingResponse)
+    async def boss_refinement(body: RefinementRequest, request: Request):
+        if request.headers.get("origin"):
+            raise HTTPException(403, "Use the local controller to start processing.")
+        video, detections, output = Path(body.inputVideo), Path(body.detectionsFile), Path(body.outputDirectory)
+        if not all(path.is_absolute() for path in (video, detections, output)):
+            raise HTTPException(400, "inputVideo, detectionsFile and outputDirectory must be absolute paths.")
+        if not video.is_file() or not detections.is_file():
+            raise HTTPException(404, "Input video or completed detections file does not exist.")
+        if detections.suffix.lower() != ".jsonl" or detections.name.endswith(".partial.jsonl"):
+            raise HTTPException(400, "Refinement requires a completed detection .jsonl file.")
+        if output.exists():
+            raise HTTPException(409, "Refinement output directory already exists.")
+        try:
+            service_config = load_config(os.environ.get("YCG_VIDEO_CONFIG"))
+            vision_config = load_vision_config(os.environ.get("YCG_VISION_CONFIG"))
+        except ValueError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        token = os.environ.get("LM_STUDIO_API_TOKEN", "")
+        context = {"operation": "boss-refinement", "gameName": body.gameName,
+                   "inputVideo": str(video), "detectionsFile": str(detections), "outputDirectory": str(output)}
+
+        def work(emit, disconnected):
+            refine_boundaries(body.gameName, video, detections, output, service_config, vision_config,
+                              api_token=token, on_progress=emit, cancelled=disconnected)
 
         return stream_processing(work, context)
 

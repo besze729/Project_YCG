@@ -106,7 +106,7 @@ effective `samplingIntervalSeconds`. `GET /api/chapters/jobs/{jobId}` returns
 the current snapshot. `GET /api/chapters/jobs/{jobId}/events` is an SSE stream with
 numbered `processing` events and `Last-Event-ID` replay. Events contain `state`,
 `message`, `jobId`, and, for video events, `videoIndex`, `videoName`,
-`operation` (`proxy`, `sample`, or `boss-detection`), and the
+`operation` (`proxy`, `sample`, `boss-detection`, or `boss-refinement`), and the
 Python progress fields (`fps`, `speed`, `source_seconds`, `duration_seconds`,
 `frame_count`, `total_frames`, `percent`, `command`, `commandLine`). Sampling
 reports extracted/expected frames and the latest sample timestamp with null
@@ -119,14 +119,14 @@ Video stage states are `started`,
 `job_completed`, and `job_failed`. A lost event connection does not start another job.
 
 One batch runs at a time, with each video processed as proxy creation, full-video
-sampling, then boss fight detection before starting the next video. A failed stage
+sampling, boss fight detection, then boundary refinement before starting the next video. A failed stage
 stops the batch; completed preprocessing and partial detection results are retained.
-The batch completes only after all three stages finish for every video.
+The batch completes only after all four stages finish for every video.
 Commands and events are saved alongside `0001-proxy.mp4`, `0001-frames/`, and
-`0001-boss-detections.jsonl` in `YCG_PROXY_OUTPUT_ROOT/<jobId>/`. Reloading the
+`0001-boss-detections.jsonl` and `0001-boss-refinement/` in `YCG_PROXY_OUTPUT_ROOT/<jobId>/`. Reloading the
 current page reconnects to its job. Controller restarts mark unfinished jobs as
 interrupted when accessed; they do not restart encoding automatically.
-Older jobs remain readable; missing sampling/detection fields are null and
+Older jobs remain readable; missing sampling/detection/refinement fields are null and
 no new stages are retroactively started. Frontend replay treats old events without
 an `operation` field as proxy events.
 
@@ -136,8 +136,15 @@ completion it calls `POST /api/sample` with
 `{gameName,inputVideo,outputDirectory,intervalSeconds}`, using the proxy as input.
 It then calls `POST /api/boss-detection` with `{gameName,framesDirectory,outputFile}`.
 Python sends images to local LM Studio in groups of at most five, using the UI's
-game title in the external prompt. Results are raw per-frame booleans with source
-timestamps; interval generation, refinement and OCR are not part of this increment.
+game title in the external prompt. Raw per-frame booleans retain source timestamps.
+Next, `POST /api/boss-refinement` receives
+`{gameName,inputVideo,detectionsFile,outputDirectory}` and refines both interval
+boundaries at 5-second then 1-second spacing. Each video's `bossRefinementDirectory`
+contains `boss-intervals.json` plus intermediate evidence. See the
+[refinement contract](../video-processing-service/README.md#boss-fight-boundary-refinement).
+Final intervals are logged in time order to the Java console and persisted SSE
+`state: "interval"` messages for Activity log replay. Empty results are explicit;
+video-edge intervals are marked as clipped. OCR and chapter generation remain deferred.
 Python responds
 with `application/x-ndjson`, one progress object per line, plus idle heartbeats.
 The controller relays these through SSE. The `command` array is the actual
@@ -178,7 +185,7 @@ verifies that Process is blocked without knowledge, builds JSON through a local
 LM Studio HTTP stand-in, checks the logged absolute path, cancellation and confirmed
 overwrite, then clicks Process, verifies event replay after reload, checks the H.264/720p proxies
 and their duration, verifies timestamped JPEGs, vision requests and JSONL results,
-checks proxy/sample/detection stage ordering,
+checks proxy/sample/detection/refinement stage ordering and interval logging,
 and confirms that the source files are unchanged. Generated
 fixtures and logs stay under the ignored `controller-application/.cache/` folder.
 

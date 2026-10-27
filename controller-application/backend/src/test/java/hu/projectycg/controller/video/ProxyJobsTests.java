@@ -47,6 +47,8 @@ class ProxyJobsTests {
     volatile String detectionResponse = "{\"state\":\"started\",\"model\":\"test-vision\",\"promptSha256\":\"hash\"}\n"
             + "{\"state\":\"running\",\"frame_count\":1,\"total_frames\":1,\"results\":[{\"imageIndex\":0,\"activeBossFight\":true}]}\n"
             + "{\"state\":\"completed\",\"frame_count\":1}\n";
+    volatile String refinementResponse = "{\"state\":\"started\"}\n"
+            + "{\"state\":\"completed\",\"intervals\":[{\"startMs\":8000,\"endMs\":42000,\"startClipped\":false,\"endClipped\":false}]}\n";
     final CountDownLatch sampleEntered = new CountDownLatch(1);
     volatile CountDownLatch sampleRelease;
     volatile long delay;
@@ -63,7 +65,8 @@ class ProxyJobsTests {
             requests.add(body);
             boolean sample = operation.equals("sample");
             boolean detection = operation.equals("boss-detection");
-            String content = detection ? detectionResponse : sample ? sampleResponse : response;
+            boolean refinement = operation.equals("boss-refinement");
+            String content = refinement ? refinementResponse : detection ? detectionResponse : sample ? sampleResponse : response;
             int code = sample ? sampleStatus : status;
             exchange.getResponseHeaders().add("Content-Type", "application/x-ndjson");
             exchange.sendResponseHeaders(code, 0);
@@ -73,7 +76,7 @@ class ProxyJobsTests {
                     sampleEntered.countDown();
                     if (sampleRelease != null) sampleRelease.await(5, TimeUnit.SECONDS);
                 }
-                if (!sample && !detection && code == 200 && content.contains("completed")) {
+                if (!sample && !detection && !refinement && code == 200 && content.contains("completed")) {
                     Files.writeString(Path.of(body.path("outputVideo").asString()), "published proxy");
                 }
                 exchange.getResponseBody().write(content.getBytes(StandardCharsets.UTF_8));
@@ -108,6 +111,28 @@ class ProxyJobsTests {
         assertThat(job.snapshot().path("state").asString()).isNotEqualTo("running");
     }
 
+    @Test void refinementFailureStopsBeforeNextVideo() throws Exception {
+        refinementResponse = "{\"state\":\"failed\",\"detail\":\"1s window failed\"}\n";
+        var job = jobs.start(request("Game", source("one.mp4"), source("two.mp4")));
+        await(job);
+        assertThat(job.state).isEqualTo("failed");
+        assertThat(job.message).contains("boundary refinement", "1s window failed");
+        assertThat(operations).containsExactly("proxy", "sample", "boss-detection", "boss-refinement");
+    }
+
+    @Test void emptyRefinementIsLoggedAndMalformedCompletionFails() throws Exception {
+        refinementResponse = "{\"state\":\"completed\",\"intervals\":[]}\n";
+        var job = jobs.start(request("Game", source("one.mp4")));
+        await(job);
+        assertThat(job.state).isEqualTo("completed");
+        assertThat(Files.readString(job.directory.resolve("events.jsonl"))).contains("No boss fight intervals detected.");
+        refinementResponse = "{\"state\":\"completed\"}\n";
+        var failed = jobs.start(request("Game", source("two.mp4")));
+        await(failed);
+        assertThat(failed.state).isEqualTo("failed");
+        assertThat(failed.message).contains("missing intervals");
+    }
+
     @Test void missingKnowledgeBasePreventsJobCreationAndDownstreamCalls() throws Exception {
         var mvc = MockMvcBuilders.standaloneSetup(new ProxyController(jobs)).build();
         mvc.perform(post("/api/chapters/jobs").contentType(MediaType.APPLICATION_JSON)
@@ -131,15 +156,16 @@ class ProxyJobsTests {
         var job = jobs.start(request(" Game ", first, second));
         await(job);
         assertThat(job.state).isEqualTo("completed");
-        assertThat(requests).hasSize(6);
-        assertThat(operations).containsExactly("proxy", "sample", "boss-detection", "proxy", "sample", "boss-detection");
+        assertThat(requests).hasSize(8);
+        assertThat(operations).containsExactly("proxy", "sample", "boss-detection", "boss-refinement", "proxy", "sample", "boss-detection", "boss-refinement");
         assertThat(requests.get(0).path("gameName").asString()).isEqualTo("Game");
         assertThat(requests.get(0).path("inputVideo").asString()).isEqualTo(first.toRealPath().toString());
-        assertThat(requests.get(3).path("inputVideo").asString()).isEqualTo(second.toRealPath().toString());
+        assertThat(requests.get(4).path("inputVideo").asString()).isEqualTo(second.toRealPath().toString());
         for (int i = 0; i < 2; i++) {
-            var proxy = requests.get(i * 3);
-            var sample = requests.get(i * 3 + 1);
-            var detection = requests.get(i * 3 + 2);
+            var proxy = requests.get(i * 4);
+            var sample = requests.get(i * 4 + 1);
+            var detection = requests.get(i * 4 + 2);
+            var refinement = requests.get(i * 4 + 3);
             var video = job.snapshot().path("videos").get(i);
             assertThat(sample.path("inputVideo").asString()).isEqualTo(proxy.path("outputVideo").asString());
             assertThat(sample.path("outputDirectory").asString()).isEqualTo(video.path("framesDirectory").asString());
@@ -148,11 +174,14 @@ class ProxyJobsTests {
             assertThat(detection.path("gameName").asString()).isEqualTo("Game");
             assertThat(detection.path("framesDirectory").asString()).isEqualTo(video.path("framesDirectory").asString());
             assertThat(detection.path("outputFile").asString()).isEqualTo(video.path("bossDetectionsPath").asString());
+            assertThat(refinement.path("inputVideo").asString()).isEqualTo(proxy.path("outputVideo").asString());
+            assertThat(refinement.path("detectionsFile").asString()).isEqualTo(video.path("bossDetectionsPath").asString());
+            assertThat(refinement.path("outputDirectory").asString()).isEqualTo(video.path("bossRefinementDirectory").asString());
         }
         assertThat(Files.readString(first)).isEqualTo("original media");
         var stream = new ByteArrayOutputStream();
         job.stream(1, stream);
-        assertThat(stream.toString(StandardCharsets.UTF_8)).contains("commandLine", "210", "job_completed", "sample", "total_frames", "boss-detection", "activeBossFight", "promptSha256").doesNotContain("job_started");
+        assertThat(stream.toString(StandardCharsets.UTF_8)).contains("commandLine", "210", "job_completed", "sample", "total_frames", "boss-detection", "activeBossFight", "promptSha256", "boss-refinement", "Boss fight #1: 00:00:08.000 -> 00:00:42.000").doesNotContain("job_started");
         var restored = new ProxyJobs(new VideoProcessingClient(properties), properties, knowledgeBase);
         try { assertThat(restored.get(job.id).snapshot()).isEqualTo(job.snapshot()); }
         finally { restored.shutdown(); }

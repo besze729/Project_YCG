@@ -6,7 +6,7 @@ was used for the user's local LM Studio installation.
 
 ## Purpose
 
-Run the real Python detection API and HTTP client against the LM Studio protocol
+Run the real Python detection/refinement APIs and HTTP client against the LM Studio protocol
 mock in `../mocks/lmstudio-vision/default.js`. It returns deterministic negative
 predictions to verify transport and persistence, not recognition accuracy.
 
@@ -22,6 +22,7 @@ In another terminal in the same directory:
 
 ```powershell
 .\.venv\Scripts\python.exe tests/vision_smoke.py --base-url http://localhost:19490/lmstudio
+.\.venv\Scripts\python.exe tests/refinement_smoke.py --base-url http://localhost:19490/lmstudio
 ```
 
 The test creates five synthetic 720p JPEGs and calls the production API through
@@ -40,6 +41,10 @@ ignored `output/vision-smoke-*`. Stop the simulation with Ctrl+C.
 ## Observations
 
 <!-- begin:observations -->
+- 2026-10-27: `tests/refinement_smoke.py` passed with real FFmpeg sampling and
+  the production refinement API. The sole `lmstudio` member served both 5-second
+  and 1-second passes over HTTP 200; no members were idle. Seeded coarse evidence
+  and negative mock responses produced the expected 0–1 second clipped interval.
 - 2026-10-27: `tests/vision_smoke.py` passed. The sole member, `lmstudio`, served
   one `POST /v1/chat/completions` with HTTP 200; no members were idle. Five ordered
   records were published with source times 0, 1000, 2000, 3000 and 4000 ms.

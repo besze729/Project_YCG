@@ -104,7 +104,9 @@ export default function App() {
       const videoKey = `${id}:${event.videoIndex}:${event.operation ?? 'proxy'}`
       if (event.commandLine) log('info', `FFmpeg command: ${event.commandLine}`, `${videoKey}:command`)
       if (event.state === 'running') log('info', formatProgress(event), `${videoKey}:progress`)
-      else if (event.state === 'completed') log('success', event.operation === 'boss-detection'
+      else if (event.state === 'completed') log('success', event.operation === 'boss-refinement'
+        ? `${event.videoName}: boss fight intervals ready — ${event.outputFile}`
+        : event.operation === 'boss-detection'
         ? `${event.videoName}: boss fight analysis ready (${event.frame_count} frames) — ${event.outputFile}`
         : event.operation === 'sample'
         ? `${event.videoName}: sampled frames ready (${event.frame_count}) — ${event.outputDirectory}`

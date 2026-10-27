@@ -24,3 +24,9 @@ The launcher requires the existing Python `.venv`, frontend dependencies, Java,
 Maven, and the LM Studio token file used by both the Java backend and Python
 vision module. The Python launcher loads the same saved token automatically.
 See the [controller guide](controller-application/README.md) for setup details.
+
+Process creates a 720p proxy, detects boss health bars in coarse sampled frames,
+then refines observed start/end boundaries at 5-second and 1-second spacing.
+Derived intervals appear in the backend console and Activity log and are saved
+with their evidence under each job's `*-boss-refinement/` directory. Boss naming
+and chapter generation remain later steps.

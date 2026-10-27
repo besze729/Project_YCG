@@ -8,7 +8,8 @@
 - **AI / Vision components:** Python
 - **Current vision increment:** a separate module in the existing Python service
   calls local LM Studio for batched boss-health-bar detection; Java sequences
-  proxy creation, sampling and detection and relays persisted progress.
+  proxy creation, sampling, detection and boundary refinement and relays persisted
+  progress and final interval logs. Python owns temporal refinement and aggregation.
 - **Python API:** FastAPI
 - **Controller ↔ Python:** REST + JSON
 - **Video processing:** Controller calls the Python Video Processing Service over

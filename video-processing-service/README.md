@@ -38,7 +38,7 @@ game title and absolute paths. It streams `application/x-ndjson` progress with
 `started`, `running`, `completed`, or `failed` states, plus heartbeat records.
 The start record includes the argument array `command` and display string
 `commandLine`. Existing outputs are rejected; a failed run publishes no partial
-proxy. Only one operation (proxy, sampling, or boss detection) runs at once;
+proxy. Only one operation (proxy, sampling, boss detection, or refinement) runs at once;
 concurrent requests receive HTTP 409.
 The controller and Python process must have access to the same local source
 paths. No upload, input staging copy, or network share translation is performed.
@@ -128,7 +128,7 @@ Responses must contain exactly one `{imageIndex, activeBossFight}` per input,
 in the same order, with a JSON boolean. Malformed, truncated or misaligned output
 fails the stage; it is never converted to `false`. The boolean is a raw model
 prediction using the prompt's top-of-image health-bar rule, not a verified fight
-interval. Interval aggregation and refinement are deferred.
+interval. The subsequent refinement stage derives intervals from these predictions.
 
 The NDJSON stream uses `operation: "boss-detection"` and the existing
 `started`/`running`/`completed`/`failed` states. It sends heartbeats while waiting
@@ -157,6 +157,58 @@ Invalid request shapes return 422, relative paths or an invalid output extension
 Configuration errors return 500. Frame-content, LM Studio and storage errors after
 acceptance are terminal `failed` events, with the affected batch identified for
 model failures. The generated OpenAPI contract is available at `/openapi.json`.
+
+## Boss fight boundary refinement
+
+After coarse detection, the controller calls `POST /api/boss-refinement`:
+
+```json
+{
+  "gameName": "Mortal Shell",
+  "inputVideo": "F:\\YCG\\job\\0001-proxy.mp4",
+  "detectionsFile": "F:\\YCG\\job\\0001-boss-detections.jsonl",
+  "outputDirectory": "F:\\YCG\\job\\0001-boss-refinement"
+}
+```
+
+All paths must be absolute. Inputs must exist; detection input must be a completed
+`.jsonl`, with increasing integer indices/timestamps, boolean predictions and a
+first timestamp of zero. Existing output directories or a busy service return 409;
+invalid paths/input extensions return 400, missing files 404, malformed bodies 422.
+Invalid evidence or runtime failures produce a terminal `failed` event.
+
+Each adjacent false/true or true/false pair defines a boundary window. Sample its
+interior every 5 seconds, reuse known endpoints, then sample every observed
+transition's interior every 1 second. Both passes use the existing external vision
+prompt, game title and configured batch limit (five by default), captured once
+for the refinement request. No conversation history or knowledge-base content is
+added. All observed transitions are retained, including additional splits found
+inside a window; no short-gap merging or minimum-duration filter is applied.
+Actual source timestamps determine windows, even with a non-30-second coarse grid.
+
+Intervals are `[startMs, endMs)`: first positive frame through first subsequent
+negative frame. `startBoundary` and `endBoundary` contain `beforeMs`/`afterMs`
+brackets at most 1000 ms wide. If the first frame is positive, `startMs` is zero,
+`startClipped` is true and its bracket is null. A positive final coarse sample
+triggers refinement through the remaining video tail. If still positive at EOF,
+`endMs` is the video duration, `endClipped` is true and its bracket is null; EOF
+is not a synthetic negative frame. All-negative coarse evidence yields an empty
+list without model calls. Fights hidden entirely between equal coarse states
+remain undetected. Temporal resolution does not guarantee model accuracy.
+
+The output directory contains `manifest.json`, per-step/per-window `frames/` and
+`detections.jsonl` evidence, and `boss-intervals.json`. The final version-1 JSON
+contains `intervals`, source/detection paths, duration, game title, model,
+rendered-prompt hash, batch size and refinement steps. It is atomically published
+only after complete success. Intermediate evidence and partial batch files remain
+on failure; no automatic resume, overwrite, or retry is performed.
+
+NDJSON uses `operation: "boss-refinement"` and the usual lifecycle/heartbeat.
+Running events carry `stepSeconds`, `windowIndex`, `totalWindows`,
+`windowStartMs`, `windowEndMs` and `phase` (`sampling` or `detection`). Counts and
+percentages describe the current window. Nested sampling/detection completion
+does not terminate the whole stage. The final event includes `outputFile` and
+`intervals`. Java logs these intervals to its console and the Activity log.
 
 ## FFmpeg configuration
 

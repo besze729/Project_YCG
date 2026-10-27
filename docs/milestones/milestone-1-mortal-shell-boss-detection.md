@@ -21,7 +21,7 @@ Build Chapters shows a Process button below the video picker. It is enabled
 only while a nonblank game name and at least one video are selected. The desktop
 window supplies absolute native file paths; the controller validates both inputs
 and checks that a knowledge-base JSON exists for the selected game before
-requesting proxy creation, frame sampling, then boss fight detection from the Python service.
+requesting proxy creation, frame sampling, boss fight detection and boundary refinement from the Python service.
 A missing knowledge base is reported in the activity log and no job is started.
 Knowledge content is not yet passed into the video-processing pipeline.
 The controller's `backend/src/main/resources/application.properties` sets
@@ -29,7 +29,7 @@ The controller's `backend/src/main/resources/application.properties` sets
 the UI does not expose an interval field. Videos are read in place,
 without uploads or source copies. A batch runs sequentially and stops on failure.
 Completed proxies and frame directories remain available. Each video finishes
-all three stages before the next begins. The activity log shows the exact FFmpeg
+all four stages before the next begins. The activity log shows the exact FFmpeg
 commands, stage, live position, proxy percentage, sampled/expected frame counts,
 FPS, speed, and completion or failure. Events
 are persisted by the controller and replayed on frontend reconnection.
@@ -38,8 +38,8 @@ Build Knowledge Base is connected to a synchronous backend request. Start
 reports a pending request and then success with the exact saved JSON path, or
 failure, in the activity log. Existing knowledge requires explicit confirmation
 before rebuilding; cancelling leaves it unchanged.
-Build Chapters currently ends after per-image boss fight detection. It produces
-raw predictions, not fight intervals or chapter candidates. Its label does not
+Build Chapters currently ends after boss fight interval refinement. It produces
+raw predictions and derived fight intervals, not chapter candidates. Its label does not
 expand the milestone beyond active boss fight detection.
 
 ## Build knowledge base for the game
@@ -100,5 +100,21 @@ no automatic retry or resume. Java owns workflow and result paths and relays
 progress to the existing activity log. The prompt hash and model are recorded in
 the job's event journal. See the video service README for configuration and API details.
 
-Interval aggregation, boundary refinement, boss-name OCR and knowledge matching
-remain subsequent increments.
+### Boundary refinement increment
+
+Python reads the completed coarse JSONL and refines every observed state change
+at 5-second, then 1-second spacing, using the same configurable vision adapter and
+external prompt. Known endpoints are reused; only new interior images are sent.
+Every additional transition is retained, without smoothing or short-gap merging.
+Intervals start at the first positive image and end exclusively at the next
+negative image. Their transition brackets are at most one second wide.
+
+Positive video edges are marked as clipped. A positive last coarse sample causes
+the remaining tail to be examined; EOF never becomes a fabricated negative.
+Equal coarse states do not trigger a search for hidden short fights.
+
+Per-window evidence remains on disk; `boss-intervals.json` is published only after
+successful refinement. Java logs final intervals to its console and the replayable
+Activity log. Failures stop processing while preserving intermediate results;
+automatic resume remains deferred. Boss-name OCR and knowledge matching remain
+subsequent increments.

@@ -4,17 +4,23 @@ export type ProxyJob = {
   state: 'running' | 'completed' | 'failed'
   message: string
   samplingIntervalSeconds?: number | null
-  videos: { name: string; inputPath: string; outputPath: string; framesDirectory?: string | null; bossDetectionsPath?: string | null }[]
+  videos: { name: string; inputPath: string; outputPath: string; framesDirectory?: string | null; bossDetectionsPath?: string | null; bossRefinementDirectory?: string | null }[]
 }
 
 export type ProxyEvent = {
   id: number
   jobId: string
-  state: 'started' | 'running' | 'completed' | 'failed' | 'job_started' | 'job_completed' | 'job_failed'
+  state: 'started' | 'running' | 'completed' | 'failed' | 'interval' | 'job_started' | 'job_completed' | 'job_failed'
   message: string
   videoIndex?: number
   videoName?: string
-  operation?: 'proxy' | 'sample' | 'boss-detection'
+  operation?: 'proxy' | 'sample' | 'boss-detection' | 'boss-refinement'
+  stepSeconds?: number
+  windowIndex?: number
+  totalWindows?: number
+  windowStartMs?: number
+  windowEndMs?: number
+  phase?: 'sampling' | 'detection'
   commandLine?: string
   fps?: number | null
   speed?: number | null
@@ -61,14 +67,17 @@ export function watchProxyJob(id: string, receive: (event: ProxyEvent) => void,
 }
 
 export function formatProgress(event: ProxyEvent): string {
-  const stage = event.operation === 'boss-detection' ? 'Boss fight detection'
+  const stage = event.operation === 'boss-refinement' ? `Boss boundary refinement (${event.stepSeconds ?? '?'} s, ${event.phase ?? 'analysis'})`
+    : event.operation === 'boss-detection' ? 'Boss fight detection'
     : event.operation === 'sample' ? 'Frame sampling' : 'Proxy'
   const parts = [event.videoName || 'Video', stage]
+  if (event.windowIndex != null) parts.push(`window ${event.windowIndex} / ${event.totalWindows ?? '?'}`)
+  if (event.windowStartMs != null && event.windowEndMs != null) parts.push(`${event.windowStartMs / 1000}–${event.windowEndMs / 1000} s`)
   if (event.percent != null) parts.push(`${event.percent.toFixed(1)}%`)
-  if (event.source_seconds != null) parts.push(event.operation === 'boss-detection'
+  if (event.source_seconds != null) parts.push(event.operation === 'boss-detection' || event.operation === 'boss-refinement'
     ? `source ${event.source_seconds.toFixed(1)} s`
     : `${event.source_seconds.toFixed(1)} / ${event.duration_seconds?.toFixed(1) ?? '?'} s`)
-  if ((event.operation === 'sample' || event.operation === 'boss-detection') && event.frame_count != null) parts.push(`frames ${event.frame_count} / ${event.total_frames ?? '?'}`)
+  if (event.operation !== 'proxy' && event.frame_count != null) parts.push(`frames ${event.frame_count} / ${event.total_frames ?? '?'}`)
   if (event.fps != null) parts.push(`${event.fps.toFixed(1)} fps`)
   if (event.speed != null) parts.push(`${event.speed.toFixed(2)}x`)
   return parts.join(' | ')

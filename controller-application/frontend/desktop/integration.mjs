@@ -92,12 +92,12 @@ try {
   })
   assert.equal(code, 0)
   assert.equal(knowledgeCalls, 2, 'Cancellation must not invoke AI; confirmed rebuild must invoke it once')
-  assert.equal(visionRequests.length, 2)
+  assert.equal(visionRequests.length, 4)
+  assert.deepEqual(visionRequests.map(request => request.messages[1].content.filter(item => item.type === 'image_url').length), [1, 3, 1, 3])
   for (const request of visionRequests) {
     assert.equal(request.model, 'qwen3-vl-8b-instruct')
     assert.ok(request.messages[0].content.includes('video game Smoke game.'))
     assert.ok(!request.messages[0].content.includes('<?GAME_TITLE>'))
-    assert.equal(request.messages[1].content.filter(item => item.type === 'image_url').length, 1)
     assert.equal(request.response_format.type, 'json_schema')
   }
   const knowledge = JSON.parse(await readFile(path.join(work, 'knowledge-base', 'Smoke game.json'), 'utf8'))
@@ -146,17 +146,24 @@ try {
     assert.match(detectionEvents[0].promptSha256, /^[a-f0-9]{64}$/)
     assert.equal(detectionEvents.at(-1).state, 'completed')
     assert.equal(detectionEvents.at(-1).outputFile, job.videos[i].bossDetectionsPath)
+    const refinement = JSON.parse(await readFile(path.join(job.videos[i].bossRefinementDirectory, 'boss-intervals.json'), 'utf8'))
+    assert.deepEqual(refinement.intervals, [{ startMs: 0, startBoundary: null, startClipped: true,
+      endMs: 4000, endBoundary: null, endClipped: true }])
+    assert.ok(events.some(event => event.videoIndex === i && event.state === 'interval'
+      && event.message.includes('Boss fight #1: 00:00:00.000 -> 00:00:04.000')))
   }
   assert.deepEqual(events.filter(event => event.state === 'completed').map(event => [event.videoIndex, event.operation]),
-    [[0, 'proxy'], [0, 'sample'], [0, 'boss-detection'], [1, 'proxy'], [1, 'sample'], [1, 'boss-detection']])
+    [[0, 'proxy'], [0, 'sample'], [0, 'boss-detection'], [0, 'boss-refinement'],
+      [1, 'proxy'], [1, 'sample'], [1, 'boss-detection'], [1, 'boss-refinement']])
   assert.equal(events.at(-1).state, 'job_completed')
   assert.deepEqual((await readdir(path.join(work, 'jobs', id))).sort(),
-    ['0001-boss-detections.jsonl', '0001-frames', '0001-proxy.mp4', '0002-boss-detections.jsonl', '0002-frames', '0002-proxy.mp4', 'events.jsonl', 'job.json'])
+    ['0001-boss-detections.jsonl', '0001-boss-refinement', '0001-frames', '0001-proxy.mp4',
+      '0002-boss-detections.jsonl', '0002-boss-refinement', '0002-frames', '0002-proxy.mp4', 'events.jsonl', 'job.json'])
   assert.equal(failed.data.videos[0].inputPath, badSource)
   const failureEvents = (await readFile(path.join(work, 'jobs', failed.id, 'events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse)
   assert.equal(failureEvents.filter(event => event.state === 'failed').length, 1)
   assert.equal(failureEvents.at(-1).state, 'job_failed')
-  console.log('LIVE_INTEGRATION_OK: knowledge gate, timestamped JPEGs, vision requests, detection JSONL, replay and failure reporting')
+  console.log('LIVE_INTEGRATION_OK: knowledge gate, timestamped JPEGs, vision requests, refinement, interval logs, replay and failure reporting')
   console.log('Artifacts: ' + work)
 } catch (error) {
   console.error(logs.join(''))
