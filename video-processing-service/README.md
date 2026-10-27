@@ -1,8 +1,9 @@
 # Video Processing Service
 
-Standalone Python 3.11+ preprocessing component for Project YCG. It uses local
-FFmpeg/FFprobe to create a 480p H.264 proxy and extract JPEG frames for coarse
-or focused visual analysis. It does not perform boss recognition.
+Standalone Python 3.11+ video processing component for Project YCG. It uses local
+FFmpeg/FFprobe to create a 720p H.264 proxy and extract JPEG frames for coarse
+or focused visual analysis. A separate vision module sends sampled screenshots
+to local LM Studio for per-image boss health bar detection.
 
 ## Requirements
 
@@ -37,7 +38,7 @@ game title and absolute paths. It streams `application/x-ndjson` progress with
 `started`, `running`, `completed`, or `failed` states, plus heartbeat records.
 The start record includes the argument array `command` and display string
 `commandLine`. Existing outputs are rejected; a failed run publishes no partial
-proxy. Only one processing operation (proxy or sampling) runs at once;
+proxy. Only one operation (proxy, sampling, boss detection, or refinement) runs at once;
 concurrent requests receive HTTP 409.
 The controller and Python process must have access to the same local source
 paths. No upload, input staging copy, or network share translation is performed.
@@ -74,14 +75,151 @@ cleans unpublished staging files; completed outputs are retained.
 Run `.\.venv\Scripts\python.exe -m unittest discover -s tests -v` to include the
 HTTP adapter tests along with the CLI and FFmpeg tests.
 
+## Boss fight detection
+
+After sampling, the controller calls `POST /api/boss-detection`:
+
+```json
+{
+  "gameName": "Mortal Shell",
+  "framesDirectory": "F:\\YCG\\job\\0001-frames",
+  "outputFile": "F:\\YCG\\job\\0001-boss-detections.jsonl"
+}
+```
+
+Paths must be absolute; the input directory must contain only sampled JPEGs
+named `frame_<index>_HH-MM-SS.mmm.jpg`. Images are ordered by their numeric index;
+indices and source timestamps must be unique and increasing. The timestamp is
+read from the filename, including fractional seconds and nonzero sampling starts.
+
+The vision configuration is separate from FFmpeg settings:
+
+- [`vision/config.toml`](src/video_processing_service/vision/config.toml) selects
+  the LM Studio base URL, model, batch limit, timeouts, output-token limit and prompt file.
+- [`vision/boss_fight_prompt.tpl`](src/video_processing_service/vision/boss_fight_prompt.tpl)
+  is the editable prompt. `<?GAME_TITLE>` is replaced once with `gameName`.
+- `YCG_VISION_CONFIG` selects a partial TOML override containing `[vision]`.
+  A relative `prompt_file` is resolved beside the file that specifies it.
+  Settings and prompt are captured once per detection request; edits apply to
+  subsequent requests without rebuilding or restarting the service.
+- `LM_STUDIO_API_TOKEN` supplies optional bearer authentication. On Windows,
+  `start-server.ps1` also reads the existing token from
+  `%LOCALAPPDATA%/ProjectYCG/lmstudio-token.dpapi` when the environment value is absent.
+  Use the same Windows user that saved the token. Tokens are never stored in TOML.
+
+Defaults are `http://127.0.0.1:1234`, `qwen3-vl-8b-instruct`, at most **5 images**
+per request, a 3-second connect timeout, a 600-second request socket timeout,
+and 1024 output tokens. For example:
+
+```toml
+[vision]
+max_images_per_request = 5
+prompt_file = "my_boss_fight_prompt.tpl"
+```
+
+The client sends full proxy JPEGs to `/v1/chat/completions`, one request at a
+time, with explicit image-index labels, temperature 0 and a JSON response schema.
+Each request has its own context and no tools. The last batch can be smaller;
+12 images produce requests of 5, 5 and 2 images. Changing batch size can require
+adjusting LM Studio's loaded context and the output-token limit. No automatic
+batch reduction, retries, model unloading, cropping or name recognition occurs.
+
+Responses must contain exactly one `{imageIndex, activeBossFight}` per input,
+in the same order, with a JSON boolean. Malformed, truncated or misaligned output
+fails the stage; it is never converted to `false`. The boolean is a raw model
+prediction using the prompt's top-of-image health-bar rule, not a verified fight
+interval. The subsequent refinement stage derives intervals from these predictions.
+
+The NDJSON stream uses `operation: "boss-detection"` and the existing
+`started`/`running`/`completed`/`failed` states. It sends heartbeats while waiting
+for LM Studio. Progress includes processed/total frames, percent and the current
+batch's `results`. Start/completion events record `schemaVersion: 1`, `model`,
+`promptSha256` (SHA-256 of the rendered prompt) and `maxImagesPerRequest`.
+Every event identifies `outputFile` and `partialOutputFile`.
+
+Each validated batch is flushed to `0001-boss-detections.partial.jsonl`. Each line is:
+
+```json
+{"imageIndex":0,"frameFile":"frame_000000_00-00-00.000.jpg","sourceTimestampMs":0,"activeBossFight":false}
+```
+
+The final `.jsonl` is published only after every frame succeeds. On failure,
+the partial file is retained and the job fails; no later batch/video starts.
+Existing final or partial output returns HTTP 409 to prevent accidental overwrite.
+Partial results are inspectable but automatic resume is not implemented. Start a
+new analysis with a new output path when retrying. A disconnected controller stops
+further batches after the current request returns or times out; it does not cancel
+an inference already executing in LM Studio. Disconnecting the frontend does not
+cancel the controller job.
+
+Invalid request shapes return 422, relative paths or an invalid output extension
+400, a missing frame directory 404, and a busy worker or existing output 409.
+Configuration errors return 500. Frame-content, LM Studio and storage errors after
+acceptance are terminal `failed` events, with the affected batch identified for
+model failures. The generated OpenAPI contract is available at `/openapi.json`.
+
+## Boss fight boundary refinement
+
+After coarse detection, the controller calls `POST /api/boss-refinement`:
+
+```json
+{
+  "gameName": "Mortal Shell",
+  "inputVideo": "F:\\YCG\\job\\0001-proxy.mp4",
+  "detectionsFile": "F:\\YCG\\job\\0001-boss-detections.jsonl",
+  "outputDirectory": "F:\\YCG\\job\\0001-boss-refinement"
+}
+```
+
+All paths must be absolute. Inputs must exist; detection input must be a completed
+`.jsonl`, with increasing integer indices/timestamps, boolean predictions and a
+first timestamp of zero. Existing output directories or a busy service return 409;
+invalid paths/input extensions return 400, missing files 404, malformed bodies 422.
+Invalid evidence or runtime failures produce a terminal `failed` event.
+
+Each adjacent false/true or true/false pair defines a boundary window. Sample its
+interior every 5 seconds, reuse known endpoints, then sample every observed
+transition's interior every 1 second. Both passes use the existing external vision
+prompt, game title and configured batch limit (five by default), captured once
+for the refinement request. No conversation history or knowledge-base content is
+added. All observed transitions are retained, including additional splits found
+inside a window; no short-gap merging or minimum-duration filter is applied.
+Actual source timestamps determine windows, even with a non-30-second coarse grid.
+
+Intervals are `[startMs, endMs)`: first positive frame through first subsequent
+negative frame. `startBoundary` and `endBoundary` contain `beforeMs`/`afterMs`
+brackets at most 1000 ms wide. If the first frame is positive, `startMs` is zero,
+`startClipped` is true and its bracket is null. A positive final coarse sample
+triggers refinement through the remaining video tail. If still positive at EOF,
+`endMs` is the video duration, `endClipped` is true and its bracket is null; EOF
+is not a synthetic negative frame. All-negative coarse evidence yields an empty
+list without model calls. Fights hidden entirely between equal coarse states
+remain undetected. Temporal resolution does not guarantee model accuracy.
+
+The output directory contains `manifest.json`, per-step/per-window `frames/` and
+`detections.jsonl` evidence, and `boss-intervals.json`. The final version-1 JSON
+contains `intervals`, source/detection paths, duration, game title, model,
+rendered-prompt hash, batch size and refinement steps. It is atomically published
+only after complete success. Intermediate evidence and partial batch files remain
+on failure; no automatic resume, overwrite, or retry is performed.
+
+NDJSON uses `operation: "boss-refinement"` and the usual lifecycle/heartbeat.
+Running events carry `stepSeconds`, `windowIndex`, `totalWindows`,
+`windowStartMs`, `windowEndMs` and `phase` (`sampling` or `detection`). Counts and
+percentages describe the current window. Nested sampling/detection completion
+does not terminate the whole stage. The final event includes `outputFile` and
+`intervals`. Java logs these intervals to its console and the Activity log.
+
 ## FFmpeg configuration
 
 [`src/video_processing_service/config.toml`](src/video_processing_service/config.toml) contains the FFmpeg executable paths, acceleration mode, H.264 encoder,
 maximum proxy width and height, target bitrate, rate-control buffer, pixel format,
-encoder preset, JPEG quality, and progress update interval. The default uses CPU
-decoding and scaling followed by NVENC H.264 at 2000 kbps CBR, within 854 × 480
-while preserving source aspect ratio. To use a CPU encoder,
-set `video_codec = "libx264"` and select a libx264 preset such as `medium`.
+encoder preset, JPEG quality, and progress update interval. The default uses
+CUDA decoding and scaling followed by NVENC H.264 at 2500 kbps CBR, with a
+5000 kbit rate-control buffer and a maximum resolution of 1280 × 720 while
+preserving source aspect ratio. To use a CPU encoder,
+set `acceleration = "cpu"`, `video_codec = "libx264"`, and select a libx264
+preset such as `medium`.
 Pass a small override file with `--config PATH` to change only the desired
 values per run. For example, a CPU override can contain:
 
@@ -90,7 +228,7 @@ values per run. For example, a CPU override can contain:
 acceleration = "cpu"
 video_codec = "libx264"
 encoder_preset = "medium"
-bitrate_kbps = 2500
+bitrate_kbps = 3000
 ```
 
 Configuration is read at invocation time; no code edit is needed.
@@ -197,3 +335,12 @@ events to the controller, which streams them to the frontend.
 From this directory: set `PYTHONPATH=src`, then run
 `py -m unittest discover -s tests -v` on Windows or the equivalent `python`
 command elsewhere.
+
+An opt-in real five-image test is available with
+`.\.venv\Scripts\python.exe tests/vision_smoke.py`. It creates small synthetic
+720p frames and calls the detection API with the real LM Studio client; provide
+`LM_STUDIO_API_TOKEN` if required. It verifies transport, ordering and JSON shape,
+not gameplay accuracy. Artifacts stay under ignored `output/`.
+
+For the same test against the local Postman simulation, see
+[`postman/simulations/boss-detection.context.md`](postman/simulations/boss-detection.context.md).

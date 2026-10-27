@@ -5,10 +5,10 @@ ffprobe = "ffprobe"
 [proxy]
 acceleration = "cuda"
 video_codec = "h264_nvenc"
-width = 854
-height = 480
-bitrate_kbps = 2000
-buffer_size_kbps = 4000
+width = 1280
+height = 720
+bitrate_kbps = 2500
+buffer_size_kbps = 5000
 pixel_format = "yuv420p"
 encoder_preset = "p4"
 

@@ -1,7 +1,7 @@
 # ADR-003: Use 480p Proxy Video for Analysis
 
 ## Status
-Accepted
+Superseded by [ADR-004](use-720p-proxy-video.md)
 
 ## Context
 Gameplay videos may be several hours long and recorded at 1440p or 4K. Initial boss-fight detection does not require full source resolution.

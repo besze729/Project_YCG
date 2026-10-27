@@ -1,0 +1,6 @@
+simulation: boss-detection
+routing: path
+mocks:
+  - name: LM Studio vision
+    routeKey: lmstudio
+    path: postman/mocks/lmstudio-vision/config.yaml

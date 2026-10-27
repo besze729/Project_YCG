@@ -18,15 +18,15 @@ Technology decisions are maintained in [the ADR directory](../docs/adr/).
 - **Build Knowledge Base** shows a Start button, enabled after entering a
   non-blank game name. Start sends a REST request and reports progress, completion,
   or errors in the activity log. The inputs and Start button are disabled while
-  the request is pending. A valid AI response is printed in the backend console;
-  it is not saved as a knowledge base yet.
+  the request is pending. A valid AI response is saved as a knowledge-base JSON
+  file, and its absolute path is shown in the activity log.
 - **Build Chapters** shows a drop area and a keyboard-accessible file picker.
   Multiple videos can be selected, inspected by name and size, and removed.
   Selection accepts video MIME types or common video filename extensions;
   FFprobe validates the actual media. Empty files and duplicate paths are skipped.
   Process is enabled only with a nonblank game name and at least one video. It
-  creates proxies and samples JPEG frames through the controller and Python
-  service. Inputs are locked
+  creates proxies, samples JPEG frames and analyzes all samples for boss health
+  bars through the controller and Python service. Inputs are locked
   while processing. The list displays each selected file's absolute path.
 - The bottom **Activity log** displays timestamped information, success,
   warning, and error messages. It retains the latest 500
@@ -100,41 +100,109 @@ matching, configured input directory, upload, or source copy is involved.
 The desktop and both services run on the same machine with access to these files.
 
 An accepted request returns HTTP 202 with `jobId`, `state`, `gameName`, and the
-planned `videos` (including proxy `outputPath` and `framesDirectory`), plus the
+planned `videos` (including proxy `outputPath`, `framesDirectory`, and
+`bossDetectionsPath`), plus the
 effective `samplingIntervalSeconds`. `GET /api/chapters/jobs/{jobId}` returns
 the current snapshot. `GET /api/chapters/jobs/{jobId}/events` is an SSE stream with
 numbered `processing` events and `Last-Event-ID` replay. Events contain `state`,
 `message`, `jobId`, and, for video events, `videoIndex`, `videoName`,
-`operation` (`proxy` or `sample`), and the
+`operation` (`proxy`, `sample`, `boss-detection`, or `boss-refinement`), and the
 Python progress fields (`fps`, `speed`, `source_seconds`, `duration_seconds`,
 `frame_count`, `total_frames`, `percent`, `command`, `commandLine`). Sampling
 reports extracted/expected frames and the latest sample timestamp with null
 `percent`. Its output path is `outputDirectory`; proxy events use `outputVideo`.
+Boss detection reports processed/total frames, percent and the validated batch's
+`results`. Its output path is `outputFile`. Detection start/completion events also
+include the model, rendered-prompt SHA-256, schema version and maximum batch size.
 Video stage states are `started`,
 `running`, `completed`, and `failed`; batch states are `job_started`,
 `job_completed`, and `job_failed`. A lost event connection does not start another job.
 
-One batch runs at a time, with each video processed as proxy creation followed
-by full-video sampling before starting the next video. A failed stage stops the
-batch; completed proxies and frame directories are retained. The batch completes
-only after every video has both outputs. Commands and events are saved alongside
-`0001-proxy.mp4`, `0001-frames/`, etc. in `YCG_PROXY_OUTPUT_ROOT/<jobId>/`. Reloading the
+One batch runs at a time, with each video processed as proxy creation, full-video
+sampling, boss fight detection, then boundary refinement before starting the next video. A failed stage
+stops the batch; completed preprocessing and partial detection results are retained.
+The batch completes only after all four processing stages and chapter formatting finish for every video.
+Commands and events are saved alongside `0001-proxy.mp4`, `0001-frames/`, and
+`0001-boss-detections.jsonl` and `0001-boss-refinement/` in `YCG_PROXY_OUTPUT_ROOT/<jobId>/`. Reloading the
 current page reconnects to its job. Controller restarts mark unfinished jobs as
 interrupted when accessed; they do not restart encoding automatically.
-Older proxy-only jobs remain readable; missing sampling fields are null and
-no sampling is retroactively started. Frontend replay treats old events without
+Older jobs remain readable; missing sampling/detection/refinement fields are null and
+no new stages are retroactively started. Frontend replay treats old events without
 an `operation` field as proxy events.
 
 The controller calls the Python service with `POST /api/proxy`, sending JSON
 `{gameName,inputVideo,outputVideo}` using absolute local paths. After proxy
 completion it calls `POST /api/sample` with
 `{gameName,inputVideo,outputDirectory,intervalSeconds}`, using the proxy as input.
+It then calls `POST /api/boss-detection` with `{gameName,framesDirectory,outputFile}`.
+Python sends images to local LM Studio in groups of at most five, using the UI's
+game title in the external prompt. Raw per-frame booleans retain source timestamps.
+Next, `POST /api/boss-refinement` receives
+`{gameName,inputVideo,detectionsFile,outputDirectory}` and refines both interval
+boundaries at 5-second then 1-second spacing. Each video's `bossRefinementDirectory`
+contains `boss-intervals.json` plus intermediate evidence. See the
+[refinement contract](../video-processing-service/README.md#boss-fight-boundary-refinement).
+Final intervals are logged in time order to the Java console and persisted SSE
+`state: "interval"` messages for Activity log replay. Empty results are explicit;
+video-edge intervals are marked as clipped. Java then formats and saves the plain
+YouTube chapter list. Boss-name OCR and richer chapter labels remain deferred.
 Python responds
 with `application/x-ndjson`, one progress object per line, plus idle heartbeats.
 The controller relays these through SSE. The `command` array is the actual
 process argument list; `commandLine` is its platform-specific display form.
 Stage completion is sent only after its output is published. Unexpected EOF and an
 unreachable Python service become failed job events.
+
+### Chapter results
+
+Successful jobs expose `resultsAvailable: true` in the job snapshot and terminal
+SSE event. Each video also emits `state: "chapters_ready"` after writing
+`youtube-chapters.txt` atomically inside its refinement directory. Results become
+visible only after the entire job succeeds. The **Show result** button opens a
+separate Electron window; multiple videos have a selector, with one pure chapter
+list in the selectable textarea. The button is restored on current-session reload
+and cleared when another Process attempt begins. The result window permits no
+external navigation or additional popups.
+
+`GET /api/chapters/jobs/{jobId}/results` returns:
+
+```json
+{
+  "jobId": "...",
+  "gameName": "Mortal Shell",
+  "videos": [{
+    "videoIndex": 0,
+    "videoName": "gameplay.mp4",
+    "durationMs": 120000,
+    "chapters": [
+      {"startSeconds": 0, "title": "Exploration"},
+      {"startSeconds": 21, "title": "BOSS_FIGHT"},
+      {"startSeconds": 90, "title": "Exploration"}
+    ],
+    "text": "00:00 Exploration\n00:21 BOSS_FIGHT\n01:30 Exploration\n",
+    "warnings": []
+  }]
+}
+```
+
+The endpoint reads saved version-1 interval artifacts and formats them without
+model calls or writes, including for older completed jobs that have interval
+artifacts but no text export. Running/failed jobs return 409; unknown jobs or
+missing artifacts return 404; unreadable/invalid evidence returns 500.
+
+Each list begins at zero, uses `MM:SS` below one hour and `H:MM:SS` thereafter,
+and contains only state changes. Fight-free videos produce `00:00 Exploration`;
+a fight starting at zero produces `00:00 BOSS_FIGHT`. There is no end-of-video
+marker and no artificial split inside a continuous Exploration section.
+Fractional boundaries are rounded down for whole-second export only; at a
+timestamp collision the later transition wins, and adjacent equal labels are
+combined. The original millisecond intervals are never modified.
+
+[YouTube requires](https://support.google.com/youtube/answer/9884579?hl=en) at least
+three chapters, starting at 00:00, each at least ten seconds long. The user chose
+to preserve the detected timeline even when these criteria are unmet. Warnings,
+including fractional-timestamp rounding when applicable, appear outside the pure
+textarea. No chapter is padded or merged to meet the ten-second minimum.
 
 Configuration: `YCG_VIDEO_SERVICE_URL` defaults to `http://127.0.0.1:8090` and
 `YCG_PROXY_OUTPUT_ROOT` to `./data/proxy-jobs` relative to the backend working
@@ -148,6 +216,10 @@ job's metadata. `YCG_VIDEO_CONNECT_TIMEOUT` defaults to `3s` and
 Both services bind to loopback. The Python server reads `YCG_VIDEO_CONFIG` as an
 optional TOML override file on each processing request. JPEG quality stays in
 the Python configuration. The UI has no sampling interval control.
+Vision settings use the separate `YCG_VISION_CONFIG` override and editable prompt;
+see the [video service guide](../video-processing-service/README.md#boss-fight-detection).
+The Python process needs access to LM Studio and its bearer token; the provided
+Windows launcher loads the same saved token used by the backend.
 
 Validation errors return HTTP 400, unreadable or missing sources 404,
 a busy controller or missing knowledge base 409, and local storage failures 500. Errors contain
@@ -163,8 +235,9 @@ to launch isolated Java/Python services on ports 18080/18090 and a hidden Electr
 window. This creates two short synthetic videos, selects their real native paths,
 verifies that Process is blocked without knowledge, builds JSON through a local
 LM Studio HTTP stand-in, checks the logged absolute path, cancellation and confirmed
-overwrite, then clicks Process, verifies event replay after reload, checks the H.264/480p proxies
-and their duration, verifies timestamped JPEGs and proxy/sample stage ordering,
+overwrite, then clicks Process, verifies event replay after reload, checks the H.264/720p proxies
+and their duration, verifies timestamped JPEGs, vision requests and JSONL results,
+checks proxy/sample/detection/refinement stage ordering and interval logging,
 and confirms that the source files are unchanged. Generated
 fixtures and logs stay under the ignored `controller-application/.cache/` folder.
 

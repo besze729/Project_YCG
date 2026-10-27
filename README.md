@@ -21,5 +21,14 @@ each module are saved under `controller-application/.cache/master-launcher-*/`.
 Launcher stdout includes wall-clock timestamps and elapsed time for each startup
 and shutdown stage, including Maven build output with `-U`.
 The launcher requires the existing Python `.venv`, frontend dependencies, Java,
-Maven, and the LM Studio token file used by `start-backend.ps1`.
+Maven, and the LM Studio token file used by both the Java backend and Python
+vision module. The Python launcher loads the same saved token automatically.
 See the [controller guide](controller-application/README.md) for setup details.
+
+Process creates a 720p proxy, detects boss health bars in coarse sampled frames,
+then refines observed start/end boundaries at 5-second and 1-second spacing.
+Derived intervals appear in the backend console and Activity log and are saved
+with their evidence under each job's `*-boss-refinement/` directory. Each video
+also receives a plain `youtube-chapters.txt` export covering the full timeline
+with `Exploration` and `BOSS_FIGHT` labels. After success, **Show result** opens
+the copyable chapter list in a separate window. Boss naming remains a later step.

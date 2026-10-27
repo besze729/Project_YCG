@@ -316,22 +316,14 @@ SOURCE VIDEO
 
 ANALYSIS PROXY
 
-1280 × 720
-or
-854 × 480
+up to 1280 × 720, preserving source aspect ratio
 
 significantly reduced bitrate
-approximately 2.5 Mbps or similar
+currently 2.5 Mbps
 ```
 
-The exact proxy parameters must be evaluated experimentally.
-
-Possible target resolutions:
-
-```text
-720p
-480p
-```
+The current default target is 720p at 2500 kbps. The exact proxy parameters
+must still be evaluated experimentally.
 
 Potentially even lower resolutions may be useful for the first coarse analysis pass if recognition accuracy remains acceptable.
 
@@ -831,6 +823,25 @@ The eventual user experience should be approximately:
 
 The result should require minimal editing before being pasted into a YouTube description.
 
+### Initial boss-only chapter export
+
+For the current incremental implementation, cover each video's complete timeline
+with `BOSS_FIGHT` for detected fight intervals and `Exploration` for their
+complement. `Exploration` is a placeholder label, not a location or gameplay-state
+recognition result. Emit a chapter at time zero and at each label change, with
+whole-second YouTube timestamps. Do not append an empty chapter at the video end.
+
+After successful processing, show a **Show result** button. It opens a separate
+window containing the plain chapter list in a selectable textarea. For multiple
+videos, display one video's list at a time with a video selector. Filenames,
+explanations and validation notes must remain outside the copyable chapter text.
+
+Preserve detected boundaries rather than extending or merging short sections to
+meet YouTube's chapter-count or minimum-duration requirements. Report those limits
+separately from the text. Original millisecond interval evidence remains unchanged;
+the export uses whole seconds, resolving timestamp collisions without duplicate
+or zero-length chapters. Boss names and richer chapter labels remain later work.
+
 ---
 
 # 21. Initial Functional Requirements
@@ -921,10 +932,9 @@ The following require experimentation before final architectural decisions are m
 
 ### Proxy quality
 
-Determine whether:
+Evaluate whether the current 720p default offers the best trade-off against:
 
 ```text
-720p
 480p
 or lower
 ```

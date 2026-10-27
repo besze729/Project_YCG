@@ -48,7 +48,30 @@ function createWindow(options = {}) {
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true,
       nodeIntegration: false, sandbox: true },
   })
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    const result = new URL(url)
+    const jobId = result.searchParams.get('result') || ''
+    if (result.protocol !== 'ycg:' || result.host !== 'app' || result.pathname !== '/'
+        || result.hash || [...result.searchParams.keys()].join(',') !== 'result'
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)) {
+      return { action: 'deny' }
+    }
+    return { action: 'allow', overrideBrowserWindowOptions: {
+      parent: window, width: 820, height: 740, minWidth: 480, minHeight: 400,
+      title: 'YouTube chapters — Project YCG', backgroundColor: '#0d1117', autoHideMenuBar: true,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    } }
+  })
+  window.webContents.on('did-create-window', (child, details) => {
+    child.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    // window.open navigates after creation; allow that approved result URL.
+    child.webContents.on('will-navigate', (event, url) => {
+      if (url !== details.url) event.preventDefault()
+    })
+    const closeChild = () => { if (!child.isDestroyed()) child.close() }
+    window.once('closed', closeChild)
+    child.once('closed', () => window.removeListener('closed', closeChild))
+  })
   window.webContents.on('will-navigate', event => event.preventDefault())
   window.loadURL('ycg://app/').then(() => {
     window.show()

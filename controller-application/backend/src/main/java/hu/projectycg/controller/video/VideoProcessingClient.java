@@ -31,6 +31,17 @@ public class VideoProcessingClient {
                 "outputDirectory", output.toString(), "intervalSeconds", intervalSeconds), events);
     }
 
+    public void detectBossFights(String gameName, Path frames, Path output, Consumer<JsonNode> events) throws IOException {
+        process("boss-detection", Map.of("gameName", gameName, "framesDirectory", frames.toString(),
+                "outputFile", output.toString()), events);
+    }
+
+    public void refineBossFights(String gameName, Path video, Path detections, Path output,
+            Consumer<JsonNode> events) throws IOException {
+        process("boss-refinement", Map.of("gameName", gameName, "inputVideo", video.toString(),
+                "detectionsFile", detections.toString(), "outputDirectory", output.toString()), events);
+    }
+
     private void process(String operation, Map<String, ?> request, Consumer<JsonNode> events) throws IOException {
         var connection = (HttpURLConnection) properties.baseUrl().resolve("/api/" + operation).toURL().openConnection();
         connection.setConnectTimeout(Math.toIntExact(properties.connectTimeout().toMillis()));

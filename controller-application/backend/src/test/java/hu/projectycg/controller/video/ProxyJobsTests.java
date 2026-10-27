@@ -7,6 +7,7 @@ import hu.projectycg.controller.knowledge.KnowledgeBaseException;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
@@ -44,6 +45,11 @@ class ProxyJobsTests {
             + "{\"operation\":\"sample\",\"state\":\"running\",\"frame_count\":1,\"total_frames\":1}\n"
             + "{\"operation\":\"sample\",\"state\":\"completed\",\"frame_count\":1}\n";
     volatile int sampleStatus = 200;
+    volatile String detectionResponse = "{\"state\":\"started\",\"model\":\"test-vision\",\"promptSha256\":\"hash\"}\n"
+            + "{\"state\":\"running\",\"frame_count\":1,\"total_frames\":1,\"results\":[{\"imageIndex\":0,\"activeBossFight\":true}]}\n"
+            + "{\"state\":\"completed\",\"frame_count\":1}\n";
+    volatile String refinementResponse = "{\"state\":\"started\"}\n"
+            + "{\"state\":\"completed\",\"intervals\":[{\"startMs\":8000,\"endMs\":42000,\"startClipped\":false,\"endClipped\":false}]}\n";
     final CountDownLatch sampleEntered = new CountDownLatch(1);
     volatile CountDownLatch sampleRelease;
     volatile long delay;
@@ -59,7 +65,9 @@ class ProxyJobsTests {
             var body = mapper.readTree(exchange.getRequestBody().readAllBytes());
             requests.add(body);
             boolean sample = operation.equals("sample");
-            String content = sample ? sampleResponse : response;
+            boolean detection = operation.equals("boss-detection");
+            boolean refinement = operation.equals("boss-refinement");
+            String content = refinement ? refinementResponse : detection ? detectionResponse : sample ? sampleResponse : response;
             int code = sample ? sampleStatus : status;
             exchange.getResponseHeaders().add("Content-Type", "application/x-ndjson");
             exchange.sendResponseHeaders(code, 0);
@@ -69,8 +77,19 @@ class ProxyJobsTests {
                     sampleEntered.countDown();
                     if (sampleRelease != null) sampleRelease.await(5, TimeUnit.SECONDS);
                 }
-                if (!sample && code == 200 && content.contains("completed")) {
+                if (!sample && !detection && !refinement && code == 200 && content.contains("completed")) {
                     Files.writeString(Path.of(body.path("outputVideo").asString()), "published proxy");
+                }
+                if (refinement && code == 200) {
+                    for (String line : content.split("\n")) {
+                        var event = mapper.readTree(line);
+                        if (event.path("state").asString().equals("completed") && event.path("intervals").isArray()) {
+                            Path directory = Files.createDirectories(Path.of(body.path("outputDirectory").asString()));
+                            var artifact = mapper.createObjectNode().put("schemaVersion", 1).put("durationMs", 60000);
+                            artifact.set("intervals", event.path("intervals"));
+                            Files.writeString(directory.resolve("boss-intervals.json"), artifact.toString());
+                        }
+                    }
                 }
                 exchange.getResponseBody().write(content.getBytes(StandardCharsets.UTF_8));
             } catch (InterruptedException ex) { Thread.currentThread().interrupt(); }
@@ -104,6 +123,67 @@ class ProxyJobsTests {
         assertThat(job.snapshot().path("state").asString()).isNotEqualTo("running");
     }
 
+    @Test void refinementFailureStopsBeforeNextVideo() throws Exception {
+        refinementResponse = "{\"state\":\"failed\",\"detail\":\"1s window failed\"}\n";
+        var job = jobs.start(request("Game", source("one.mp4"), source("two.mp4")));
+        await(job);
+        assertThat(job.state).isEqualTo("failed");
+        assertThat(job.message).contains("boundary refinement", "1s window failed");
+        assertThat(operations).containsExactly("proxy", "sample", "boss-detection", "boss-refinement");
+    }
+
+    @Test void emptyRefinementIsLoggedAndMalformedCompletionFails() throws Exception {
+        refinementResponse = "{\"state\":\"completed\",\"intervals\":[]}\n";
+        var job = jobs.start(request("Game", source("one.mp4")));
+        await(job);
+        assertThat(job.state).isEqualTo("completed");
+        assertThat(Files.readString(job.directory.resolve("events.jsonl"))).contains("No boss fight intervals detected.");
+        refinementResponse = "{\"state\":\"completed\"}\n";
+        var failed = jobs.start(request("Game", source("two.mp4")));
+        await(failed);
+        assertThat(failed.state).isEqualTo("failed");
+        assertThat(failed.message).contains("missing intervals");
+    }
+
+    @Test void exposesSavedChapterResultsAndSupportsReloadedJobs() throws Exception {
+        var mvc = MockMvcBuilders.standaloneSetup(new ProxyController(jobs)).build();
+        var job = jobs.start(request("Game", source("one.mp4"), source("two.mp4")));
+        await(job);
+        assertThat(job.snapshot().path("resultsAvailable").asBoolean()).isTrue();
+        mvc.perform(get("/api/chapters/jobs/{id}/results", job.id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.videos.length()").value(2))
+                .andExpect(jsonPath("$.videos[0].videoName").value("one.mp4"))
+                .andExpect(jsonPath("$.videos[0].text").value("00:00 Exploration\n00:08 BOSS_FIGHT\n00:42 Exploration\n"));
+        assertThat(Files.readString(Path.of(job.videos.get(0).bossRefinementDirectory()).resolve("youtube-chapters.txt")))
+                .isEqualTo(jobs.results(job.id).path("videos").get(0).path("text").asString());
+        try (var restarted = new AutoCloseable() {
+            final ProxyJobs loaded = new ProxyJobs(new VideoProcessingClient(properties), properties, knowledgeBase);
+            public void close() { loaded.shutdown(); }
+        }) {
+            assertThat(restarted.loaded.get(job.id).snapshot().path("resultsAvailable").asBoolean()).isTrue();
+            assertThat(restarted.loaded.results(job.id)).isEqualTo(jobs.results(job.id));
+            // Older completed jobs with intervals but without a text export need no model calls.
+            Files.delete(Path.of(job.videos.get(0).bossRefinementDirectory()).resolve("youtube-chapters.txt"));
+            assertThat(restarted.loaded.results(job.id).path("videos").size()).isEqualTo(2);
+        }
+        Files.delete(Path.of(job.videos.get(0).bossRefinementDirectory()).resolve("boss-intervals.json"));
+        mvc.perform(get("/api/chapters/jobs/{id}/results", job.id)).andExpect(status().isNotFound());
+    }
+
+    @Test void rejectsResultsWhileRunningOrFailed() throws Exception {
+        sampleRelease = new CountDownLatch(1);
+        var job = jobs.start(request("Game", source("one.mp4")));
+        assertThat(sampleEntered.await(3, TimeUnit.SECONDS)).isTrue();
+        var mvc = MockMvcBuilders.standaloneSetup(new ProxyController(jobs)).build();
+        mvc.perform(get("/api/chapters/jobs/{id}/results", job.id)).andExpect(status().isConflict());
+        refinementResponse = "{\"state\":\"failed\",\"detail\":\"test\"}\n";
+        sampleRelease.countDown();
+        await(job);
+        assertThat(job.snapshot().path("resultsAvailable").asBoolean()).isFalse();
+        mvc.perform(get("/api/chapters/jobs/{id}/results", job.id)).andExpect(status().isConflict());
+    }
+
     @Test void missingKnowledgeBasePreventsJobCreationAndDownstreamCalls() throws Exception {
         var mvc = MockMvcBuilders.standaloneSetup(new ProxyController(jobs)).build();
         mvc.perform(post("/api/chapters/jobs").contentType(MediaType.APPLICATION_JSON)
@@ -127,24 +207,32 @@ class ProxyJobsTests {
         var job = jobs.start(request(" Game ", first, second));
         await(job);
         assertThat(job.state).isEqualTo("completed");
-        assertThat(requests).hasSize(4);
-        assertThat(operations).containsExactly("proxy", "sample", "proxy", "sample");
+        assertThat(requests).hasSize(8);
+        assertThat(operations).containsExactly("proxy", "sample", "boss-detection", "boss-refinement", "proxy", "sample", "boss-detection", "boss-refinement");
         assertThat(requests.get(0).path("gameName").asString()).isEqualTo("Game");
         assertThat(requests.get(0).path("inputVideo").asString()).isEqualTo(first.toRealPath().toString());
-        assertThat(requests.get(2).path("inputVideo").asString()).isEqualTo(second.toRealPath().toString());
+        assertThat(requests.get(4).path("inputVideo").asString()).isEqualTo(second.toRealPath().toString());
         for (int i = 0; i < 2; i++) {
-            var proxy = requests.get(i * 2);
-            var sample = requests.get(i * 2 + 1);
+            var proxy = requests.get(i * 4);
+            var sample = requests.get(i * 4 + 1);
+            var detection = requests.get(i * 4 + 2);
+            var refinement = requests.get(i * 4 + 3);
             var video = job.snapshot().path("videos").get(i);
             assertThat(sample.path("inputVideo").asString()).isEqualTo(proxy.path("outputVideo").asString());
             assertThat(sample.path("outputDirectory").asString()).isEqualTo(video.path("framesDirectory").asString());
             assertThat(sample.path("gameName").asString()).isEqualTo("Game");
             assertThat(sample.path("intervalSeconds").asInt()).isEqualTo(30);
+            assertThat(detection.path("gameName").asString()).isEqualTo("Game");
+            assertThat(detection.path("framesDirectory").asString()).isEqualTo(video.path("framesDirectory").asString());
+            assertThat(detection.path("outputFile").asString()).isEqualTo(video.path("bossDetectionsPath").asString());
+            assertThat(refinement.path("inputVideo").asString()).isEqualTo(proxy.path("outputVideo").asString());
+            assertThat(refinement.path("detectionsFile").asString()).isEqualTo(video.path("bossDetectionsPath").asString());
+            assertThat(refinement.path("outputDirectory").asString()).isEqualTo(video.path("bossRefinementDirectory").asString());
         }
         assertThat(Files.readString(first)).isEqualTo("original media");
         var stream = new ByteArrayOutputStream();
         job.stream(1, stream);
-        assertThat(stream.toString(StandardCharsets.UTF_8)).contains("commandLine", "210", "job_completed", "sample", "total_frames").doesNotContain("job_started");
+        assertThat(stream.toString(StandardCharsets.UTF_8)).contains("commandLine", "210", "job_completed", "sample", "total_frames", "boss-detection", "activeBossFight", "promptSha256", "boss-refinement", "Boss fight #1: 00:00:08.000 -> 00:00:42.000").doesNotContain("job_started");
         var restored = new ProxyJobs(new VideoProcessingClient(properties), properties, knowledgeBase);
         try { assertThat(restored.get(job.id).snapshot()).isEqualTo(job.snapshot()); }
         finally { restored.shutdown(); }
@@ -225,6 +313,24 @@ class ProxyJobsTests {
         assertThat(job.message).contains("before confirming sample completion");
     }
 
+    @Test void detectionFailureStopsBeforeNextVideo() throws Exception {
+        detectionResponse = "{\"state\":\"failed\",\"detail\":\"Invalid LM Studio detection response\"}\n";
+        var job = jobs.start(request("Game", source("one.mp4"), source("two.mp4")));
+        await(job);
+        assertThat(job.state).isEqualTo("failed");
+        assertThat(job.message).contains("one.mp4", "boss fight detection", "Invalid LM Studio");
+        assertThat(operations).containsExactly("proxy", "sample", "boss-detection");
+        assertThat(Files.readString(job.directory.resolve("events.jsonl"))).contains("job_failed").doesNotContain("job_completed");
+    }
+
+    @Test void detectionEofWithoutCompletionFails() throws Exception {
+        detectionResponse = "{\"state\":\"running\",\"frame_count\":1}\n";
+        var job = jobs.start(request("Game", source("one.mp4")));
+        await(job);
+        assertThat(job.state).isEqualTo("failed");
+        assertThat(job.message).contains("before confirming boss-detection completion");
+    }
+
     @Test void samplingHttpErrorFailsWithStageAndReason() throws Exception {
         sampleStatus = 409;
         sampleResponse = "{\"detail\":\"Output already exists.\"}";
@@ -269,6 +375,7 @@ class ProxyJobsTests {
         var restored = jobs.get(id).snapshot();
         assertThat(restored.path("state").asString()).isEqualTo("completed");
         assertThat(restored.path("videos").get(0).path("framesDirectory").isNull()).isTrue();
+        assertThat(restored.path("videos").get(0).path("bossDetectionsPath").isNull()).isTrue();
         assertThat(restored.path("samplingIntervalSeconds").isNull()).isTrue();
         assertThat(requests).isEmpty();
     }

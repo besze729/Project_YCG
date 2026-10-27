@@ -26,19 +26,20 @@ class ConfigurationTests(unittest.TestCase):
         config = load_config()
         self.assertEqual(config.proxy.video_codec, "h264_nvenc")
         self.assertIn(config.proxy.acceleration, {"cpu", "cuda"})
-        self.assertEqual(config.proxy.bitrate_kbps, 2000)
-        self.assertEqual(config.proxy.height, 480)
+        self.assertEqual(config.proxy.bitrate_kbps, 2500)
+        self.assertEqual(config.proxy.buffer_size_kbps, 5000)
+        self.assertEqual((config.proxy.width, config.proxy.height), (1280, 720))
         self.assertGreaterEqual(config.progress.interval_seconds, Decimal("0.1"))
         with TemporaryDirectory() as directory:
             path = Path(directory) / "custom.toml"
             path.write_text('[proxy]\nacceleration = "cpu"\nvideo_codec = "libx264"\nencoder_preset = "medium"\n'
-                            'width = 1280\nheight = 720\nbitrate_kbps = 2500\n',
+                            'width = 960\nheight = 540\nbitrate_kbps = 3000\n',
                             encoding="utf-8")
             overridden = load_config(path)
             self.assertEqual(overridden.proxy.video_codec, "libx264")
             self.assertEqual(overridden.proxy.acceleration, "cpu")
-            self.assertEqual((overridden.proxy.width, overridden.proxy.height), (1280, 720))
-            self.assertEqual(overridden.proxy.bitrate_kbps, 2500)
+            self.assertEqual((overridden.proxy.width, overridden.proxy.height), (960, 540))
+            self.assertEqual(overridden.proxy.bitrate_kbps, 3000)
 
     def test_progress_interval_override(self):
         with TemporaryDirectory() as directory:
@@ -266,7 +267,10 @@ class FfmpegIntegrationTests(unittest.TestCase):
             self.assertEqual(command[0], config.tools.ffmpeg)
             self.assertEqual(command[command.index("-progress") + 1], "pipe:1")
             self.assertEqual(command[command.index("-vf") + 1].split(":", 1)[0],
-                             "scale=w=854")
+                             "scale=w=1280")
+            for option in ("-b:v", "-minrate", "-maxrate"):
+                self.assertEqual(command[command.index(option) + 1], "2500k")
+            self.assertEqual(command[command.index("-bufsize") + 1], "5000k")
             self.assertTrue(command[-1].endswith("proxy.mp4"))
             self.assertTrue(any(event.state == "running" and event.frame_count is not None
                                 and event.fps is not None for event in proxy_events))
@@ -276,7 +280,8 @@ class FfmpegIntegrationTests(unittest.TestCase):
                 "-show_entries", "stream=codec_name,height,width", "-of", "csv=p=0", str(proxy),
             ], check=True, text=True, capture_output=True).stdout.strip()
             self.assertIn("h264", metadata)
-            self.assertIn("480", metadata)
+            self.assertIn("1280", metadata)
+            self.assertIn("720", metadata)
 
             override = root / "cpu.toml"
             override.write_text('[proxy]\nacceleration = "cpu"\nvideo_codec = "libx264"\n'

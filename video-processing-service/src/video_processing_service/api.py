@@ -17,12 +17,14 @@ from starlette.background import BackgroundTask
 
 from .config import load_config
 from .service import ProcessingProgress, SamplingConfig, create_proxy, sample_frames
+from .vision.config import load_vision_config
+from .vision.detection import detect_frames, partial_path
+from .vision.refinement import refine_boundaries
 
 
-class VideoRequest(BaseModel):
+class GameRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     gameName: str = Field(min_length=1, max_length=200)
-    inputVideo: str
 
     @field_validator("gameName")
     @classmethod
@@ -30,6 +32,20 @@ class VideoRequest(BaseModel):
         if not value.strip():
             raise ValueError("gameName must not be blank")
         return value.strip()
+
+
+class VideoRequest(GameRequest):
+    inputVideo: str
+
+
+class DetectionRequest(GameRequest):
+    framesDirectory: str
+    outputFile: str
+
+
+class RefinementRequest(VideoRequest):
+    detectionsFile: str
+    outputDirectory: str
 
 
 class ProxyRequest(VideoRequest):
@@ -65,6 +81,62 @@ def create_app() -> FastAPI:
         sampling = SamplingConfig(body.intervalSeconds, body.startTime, body.endTime)
         return start_processing(body, request, body.outputDirectory, sampling)
 
+    @app.post("/api/boss-detection", response_class=StreamingResponse)
+    async def boss_detection(body: DetectionRequest, request: Request):
+        if request.headers.get("origin"):
+            raise HTTPException(403, "Use the local controller to start processing.")
+        directory, output = Path(body.framesDirectory), Path(body.outputFile)
+        if not directory.is_absolute() or not output.is_absolute():
+            raise HTTPException(400, "framesDirectory and outputFile must be absolute paths.")
+        if not directory.is_dir():
+            raise HTTPException(404, "Sampled frame directory does not exist.")
+        if output.suffix.lower() != ".jsonl":
+            raise HTTPException(400, "Detection output must be a .jsonl file.")
+        if output.exists() or partial_path(output).exists():
+            raise HTTPException(409, "Detection output or partial output already exists.")
+        try:
+            config = load_vision_config(os.environ.get("YCG_VISION_CONFIG"))
+        except ValueError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        token = os.environ.get("LM_STUDIO_API_TOKEN", "")
+        context = {"operation": "boss-detection", "gameName": body.gameName,
+                   "framesDirectory": str(directory), "outputFile": str(output),
+                   "partialOutputFile": str(partial_path(output))}
+
+        def work(emit, disconnected):
+            detect_frames(body.gameName, directory, output, config, api_token=token,
+                          on_progress=emit, cancelled=disconnected)
+
+        return stream_processing(work, context)
+
+    @app.post("/api/boss-refinement", response_class=StreamingResponse)
+    async def boss_refinement(body: RefinementRequest, request: Request):
+        if request.headers.get("origin"):
+            raise HTTPException(403, "Use the local controller to start processing.")
+        video, detections, output = Path(body.inputVideo), Path(body.detectionsFile), Path(body.outputDirectory)
+        if not all(path.is_absolute() for path in (video, detections, output)):
+            raise HTTPException(400, "inputVideo, detectionsFile and outputDirectory must be absolute paths.")
+        if not video.is_file() or not detections.is_file():
+            raise HTTPException(404, "Input video or completed detections file does not exist.")
+        if detections.suffix.lower() != ".jsonl" or detections.name.endswith(".partial.jsonl"):
+            raise HTTPException(400, "Refinement requires a completed detection .jsonl file.")
+        if output.exists():
+            raise HTTPException(409, "Refinement output directory already exists.")
+        try:
+            service_config = load_config(os.environ.get("YCG_VIDEO_CONFIG"))
+            vision_config = load_vision_config(os.environ.get("YCG_VISION_CONFIG"))
+        except ValueError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        token = os.environ.get("LM_STUDIO_API_TOKEN", "")
+        context = {"operation": "boss-refinement", "gameName": body.gameName,
+                   "inputVideo": str(video), "detectionsFile": str(detections), "outputDirectory": str(output)}
+
+        def work(emit, disconnected):
+            refine_boundaries(body.gameName, video, detections, output, service_config, vision_config,
+                              api_token=token, on_progress=emit, cancelled=disconnected)
+
+        return stream_processing(work, context)
+
     def start_processing(body: VideoRequest, request: Request, output_path: str,
                          sampling: SamplingConfig | None = None):
         operation = "sample" if sampling is not None else "proxy"
@@ -85,11 +157,28 @@ def create_app() -> FastAPI:
             config = load_config(os.environ.get("YCG_VIDEO_CONFIG"))
         except ValueError as exc:
             raise HTTPException(500, str(exc)) from exc
-        if not busy.acquire(blocking=False):
-            raise HTTPException(409, "Another video processing operation is running.")
-
         context = {"operation": operation, "gameName": body.gameName,
                    "inputVideo": str(source), output_field: str(output)}
+
+        def work(emit, disconnected):
+            def progress(event: ProcessingProgress):
+                data = asdict(event)
+                if event.command:
+                    data["commandLine"] = (subprocess.list2cmdline(event.command)
+                                           if os.name == "nt" else shlex.join(event.command))
+                emit(data)
+
+            if sampling is None:
+                create_proxy(source, output, config, on_progress=progress)
+            else:
+                sample_frames(source, output, sampling, config, on_progress=progress)
+
+        return stream_processing(work, context)
+
+    def stream_processing(work, context):
+        if not busy.acquire(blocking=False):
+            raise HTTPException(409, "Another video processing operation is running.")
+        operation = context["operation"]
         queue: Queue[dict | None] = Queue(maxsize=64)
         disconnected = Event()
 
@@ -105,23 +194,18 @@ def create_app() -> FastAPI:
         def run():
             terminal: dict | None = None
 
-            def progress(event: ProcessingProgress):
+            def progress(event: dict):
                 nonlocal terminal
-                data = asdict(event)
-                data.update(context)
-                if event.command:
-                    data["commandLine"] = (subprocess.list2cmdline(event.command)
-                                           if os.name == "nt" else shlex.join(event.command))
-                if event.state in {"completed", "failed"}:
+                if disconnected.is_set():
+                    raise RuntimeError(f"Controller disconnected from {operation} processing.")
+                data = {**event, **context}
+                if data["state"] in {"completed", "failed"}:
                     terminal = data
                 else:
                     put(data)
 
             try:
-                if sampling is None:
-                    create_proxy(source, output, config, on_progress=progress)
-                else:
-                    sample_frames(source, output, sampling, config, on_progress=progress)
+                work(progress, disconnected)
             except Exception as exc:
                 if terminal is None:
                     terminal = {**context, "state": "failed", "detail": str(exc)}
@@ -146,7 +230,7 @@ def create_app() -> FastAPI:
                         break
                     yield json.dumps(item, ensure_ascii=False, allow_nan=False) + "\n"
             finally:
-                # The next progress callback interrupts FFmpeg and cleans staging.
+                # Stop FFmpeg at its next callback or detection before the next batch.
                 disconnected.set()
 
         Thread(target=run, daemon=True, name=f"{operation}-worker").start()
