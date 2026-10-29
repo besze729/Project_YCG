@@ -20,6 +20,18 @@ from video_processing_service.vision.detection import detect_frames, list_frames
 
 
 class VisionConfigurationTests(unittest.TestCase):
+    def test_minimum_duration_default_override_and_validation(self):
+        self.assertEqual(load_vision_config().minimum_boss_fight_seconds, 10)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "vision.toml"
+            for value in (0, 1, 25):
+                path.write_text(f"[vision]\nminimum_boss_fight_seconds={value}\n")
+                self.assertEqual(load_vision_config(path).minimum_boss_fight_seconds, value)
+            for value in ("-1", "true", "1.5", '"10"'):
+                path.write_text(f"[vision]\nminimum_boss_fight_seconds={value}\n")
+                with self.assertRaisesRegex(ValueError, "nonnegative integer"):
+                    load_vision_config(path)
+
     def test_external_template_override_and_single_substitution(self):
         default = load_vision_config()
         self.assertEqual(default.max_images_per_request, 5)

@@ -38,13 +38,32 @@ def main():
     events = [json.loads(line) for line in response.text.splitlines()]
     (root / "events.json").write_text(json.dumps(events, indent=2), encoding="utf-8")
     assert events[-1]["state"] == "completed", events[-1]
-    assert events[-1]["intervals"] == [{"startMs": 0, "startBoundary": None, "startClipped": True,
-                                        "endMs": 1000, "endBoundary": {"beforeMs": 0, "afterMs": 1000}, "endClipped": False}]
+    assert events[-1]["intervals"] == []
+    warnings = [e for e in events if e["state"] == "warning"]
+    assert len(warnings) == 1
+    assert warnings[0]["reason"] == "below_minimum_duration"
+    assert warnings[0]["maximumDurationMs"] == 5000
+    assert warnings[0]["minimumDurationMs"] == 10000
+    assert warnings[0]["earlyRejected"]
     rows = [json.loads(line) for path in sorted((root / "refinement").rglob("detections.jsonl"))
             for line in path.read_text().splitlines()]
-    assert sorted(row["sourceTimestampMs"] for row in rows) == [1000, 2000, 3000, 4000, 5000, 10000, 15000, 20000, 25000]
+    assert sorted(row["sourceTimestampMs"] for row in rows) == [5000, 10000, 15000, 20000, 25000]
     assert sum(e["state"] == "completed" for e in events) == 1
-    assert {e["stepSeconds"] for e in events if "stepSeconds" in e} == {1, 5}
+    assert {e["stepSeconds"] for e in events if "stepSeconds" in e} == {5}
+    override.write_text('[vision]\nbase_url=' + json.dumps(args.base_url)
+                        + '\nminimum_boss_fight_seconds=0\n', encoding="utf-8")
+    with patch.dict(os.environ, {"YCG_VISION_CONFIG": str(override), "LM_STUDIO_API_TOKEN": ""}), TestClient(create_app()) as client:
+        legacy = client.post("/api/boss-refinement", json={
+            "gameName": "Synthetic test", "inputVideo": str(source), "detectionsFile": str(coarse),
+            "outputDirectory": str(root / "unfiltered"),
+        })
+    assert legacy.status_code == 200
+    legacy_events = [json.loads(line) for line in legacy.text.splitlines()]
+    assert legacy_events[-1]["state"] == "completed"
+    assert legacy_events[-1]["intervals"] == [{"startMs": 0, "startBoundary": None, "startClipped": True,
+                                              "endMs": 1000, "endBoundary": {"beforeMs": 0, "afterMs": 1000}, "endClipped": False}]
+    assert not any(e["state"] == "warning" for e in legacy_events)
+    assert {e["stepSeconds"] for e in legacy_events if "stepSeconds" in e} == {1, 5}
     print(json.dumps({"result": "REFINEMENT_API_SMOKE_OK", "frames": len(rows), "artifacts": str(root)}))
 
 

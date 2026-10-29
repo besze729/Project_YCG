@@ -92,8 +92,8 @@ try {
   })
   assert.equal(code, 0)
   assert.equal(knowledgeCalls, 2, 'Cancellation must not invoke AI; confirmed rebuild must invoke it once')
-  assert.equal(visionRequests.length, 4)
-  assert.deepEqual(visionRequests.map(request => request.messages[1].content.filter(item => item.type === 'image_url').length), [1, 3, 1, 3])
+  assert.equal(visionRequests.length, 2, 'Short video candidates must skip all refinement model calls')
+  assert.deepEqual(visionRequests.map(request => request.messages[1].content.filter(item => item.type === 'image_url').length), [1, 1])
   for (const request of visionRequests) {
     assert.equal(request.model, 'qwen3-vl-8b-instruct')
     assert.ok(request.messages[0].content.includes('video game Smoke game.'))
@@ -147,11 +147,17 @@ try {
     assert.equal(detectionEvents.at(-1).state, 'completed')
     assert.equal(detectionEvents.at(-1).outputFile, job.videos[i].bossDetectionsPath)
     const refinement = JSON.parse(await readFile(path.join(job.videos[i].bossRefinementDirectory, 'boss-intervals.json'), 'utf8'))
-    assert.deepEqual(refinement.intervals, [{ startMs: 0, startBoundary: null, startClipped: true,
-      endMs: 4000, endBoundary: null, endClipped: true }])
-    assert.equal(await readFile(path.join(job.videos[i].bossRefinementDirectory, 'youtube-chapters.txt'), 'utf8'), '00:00 BOSS_FIGHT\n')
+    assert.deepEqual(refinement.intervals, [])
+    assert.equal(refinement.minimumDurationMs, 10000)
+    assert.equal(await readFile(path.join(job.videos[i].bossRefinementDirectory, 'youtube-chapters.txt'), 'utf8'), '00:00 Exploration\n')
+    const warnings = events.filter(event => event.videoIndex === i && event.state === 'warning')
+    assert.equal(warnings.length, 1)
+    assert.equal(warnings[0].reason, 'below_minimum_duration')
+    assert.equal(warnings[0].maximumDurationMs, 4000)
+    const rejected = JSON.parse((await readFile(path.join(job.videos[i].bossRefinementDirectory, 'rejected-intervals.jsonl'), 'utf8')).trim())
+    assert.equal(rejected.maximumDurationMs, 4000)
     assert.ok(events.some(event => event.videoIndex === i && event.state === 'interval'
-      && event.message.includes('Boss fight #1: 00:00:00.000 -> 00:00:04.000')))
+      && event.message.includes('No boss fight intervals detected.')))
   }
   assert.deepEqual(events.filter(event => event.state === 'completed').map(event => [event.videoIndex, event.operation]),
     [[0, 'proxy'], [0, 'sample'], [0, 'boss-detection'], [0, 'boss-refinement'],

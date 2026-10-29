@@ -105,7 +105,7 @@ the job's event journal. See the video service README for configuration and API 
 Python reads the completed coarse JSONL and refines every observed state change
 at 5-second, then 1-second spacing, using the same configurable vision adapter and
 external prompt. Known endpoints are reused; only new interior images are sent.
-Every additional transition is retained, without smoothing or short-gap merging.
+Every additional transition is preserved in the evidence, without smoothing or short-gap merging.
 Intervals start at the first positive image and end exclusively at the next
 negative image. Their transition brackets are at most one second wide.
 
@@ -119,6 +119,22 @@ Activity log. Failures stop processing while preserving intermediate results;
 automatic resume remains deferred. Boss-name OCR and knowledge matching remain
 subsequent increments.
 
+### Minimum fight duration increment
+
+Python filters detected fights shorter than the configurable
+`vision.minimum_boss_fight_seconds` (default 10, zero disables filtering).
+Exactly-at-threshold fights remain; clipped fights use their in-video duration.
+The threshold is captured per refinement request. After coarse loading and each
+completed window, candidates whose maximum possible duration on the final 1s
+sampling grid is below the threshold skip remaining refinement work. The final
+interval artifact contains only accepted fights; Exploration fills rejected spans.
+
+Raw predictions stay unchanged. `rejected-intervals.jsonl` records each rejection,
+the threshold and either exact boundaries/duration or the early rejection window
+and duration upper bound. Each rejection produces one warning in the Java console
+and persisted/replayed Activity log. Saved old results are not rewritten. No UI
+configuration control, model retraining or prompt change is part of this increment.
+
 ### Plain chapter result increment
 
 Java formats the persisted interval evidence deterministically into YouTube-style
@@ -129,7 +145,7 @@ textarea and, for multiple videos, a video selector. Results remain available on
 page reload and can be reconstructed from older completed jobs' saved intervals
 without repeating analysis. Failed or running jobs do not expose results.
 
-The requested boundaries are preserved even when there are fewer than three
+The accepted boundaries are preserved even when there are fewer than three
 chapters or a chapter is shorter than ten seconds. YouTube limitation notes appear
 outside the textarea. Whole-second export rounding and adjacent equal labels do
 not alter the persisted raw interval evidence. No arbitrary Exploration splits,

@@ -21,6 +21,11 @@ class VisionConfig:
     request_timeout_seconds: int
     max_output_tokens: int
     prompt_template: str
+    minimum_boss_fight_seconds: int = 10
+
+    def __post_init__(self):
+        if type(self.minimum_boss_fight_seconds) is not int or self.minimum_boss_fight_seconds < 0:
+            raise ValueError("vision.minimum_boss_fight_seconds must be a nonnegative integer")
 
     def render_prompt(self, game_name: str) -> str:
         if not game_name.strip():
@@ -46,7 +51,7 @@ def load_vision_config(path: str | Path | None = None) -> VisionConfig:
         data["vision"].update(override["vision"])
     values = _section(data, "vision", {
         "base_url", "model", "max_images_per_request", "connect_timeout_seconds",
-        "request_timeout_seconds", "max_output_tokens", "prompt_file",
+        "request_timeout_seconds", "max_output_tokens", "prompt_file", "minimum_boss_fight_seconds",
     })
     base_url = _nonempty_string(values["base_url"], "vision.base_url").rstrip("/")
     url = urlsplit(base_url)
@@ -67,4 +72,5 @@ def load_vision_config(path: str | Path | None = None) -> VisionConfig:
         request_timeout_seconds=_positive_int(values["request_timeout_seconds"], "vision.request_timeout_seconds"),
         max_output_tokens=_positive_int(values["max_output_tokens"], "vision.max_output_tokens"),
         prompt_template=template,
+        minimum_boss_fight_seconds=values["minimum_boss_fight_seconds"],
     )

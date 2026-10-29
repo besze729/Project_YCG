@@ -11,7 +11,7 @@ export type ProxyJob = {
 export type ProxyEvent = {
   id: number
   jobId: string
-  state: 'started' | 'running' | 'completed' | 'failed' | 'interval' | 'chapters_ready' | 'job_started' | 'job_completed' | 'job_failed'
+  state: 'started' | 'running' | 'completed' | 'failed' | 'warning' | 'interval' | 'chapters_ready' | 'job_started' | 'job_completed' | 'job_failed'
   message: string
   resultsAvailable?: boolean
   videoIndex?: number

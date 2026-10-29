@@ -69,6 +69,73 @@ def build_intervals(points: dict[int, bool], duration_ms: int) -> list[dict]:
     return intervals
 
 
+class MinimumDurationFilter:
+    """Reject bounded candidates without changing any recorded model prediction."""
+
+    def __init__(self, minimum_ms: int, output: Path, on_progress: Callable[[dict], None]):
+        self.minimum_ms = minimum_ms
+        self.path = output / "rejected-intervals.jsonl"
+        self.on_progress = on_progress
+        self.rejected_windows: list[tuple[int, int]] = []
+        self.path.touch(exist_ok=False)
+
+    def excludes(self, left: int, right: int) -> bool:
+        return any(start <= left and right <= end for start, end in self.rejected_windows)
+
+    def inspect(self, points: dict[int, bool], duration_ms: int, *, stage: str, final: bool = False):
+        if self.minimum_ms == 0:
+            return
+        for interval in build_intervals(points, duration_ms):
+            boundary = interval["startBoundary"]
+            left = boundary["beforeMs"] if boundary else interval["startMs"]
+            right = interval["endMs"]
+            if self.excludes(left, right):
+                continue
+            # No future 5s/1s pass can introduce a positive before this point.
+            # Any additional fights found inside the bracket are bounded by the
+            # same envelope, so skipping it cannot remove a qualifying interval.
+            earliest_start = left + min(1000, interval["startMs"] - left) if boundary else left
+            maximum_ms = right - earliest_start
+            duration = interval["endMs"] - interval["startMs"]
+            precise = final or (all(not interval[key] or
+                                   interval[key]["afterMs"] - interval[key]["beforeMs"] <= 1000
+                                   for key in ("startBoundary", "endBoundary"))
+                               and (not interval["endClipped"] or duration_ms - max(points) <= 1000))
+            if (duration if precise else maximum_ms) >= self.minimum_ms:
+                continue
+            record = {"schemaVersion": 1, "state": "warning", "reason": "below_minimum_duration",
+                      "stage": stage, "minimumDurationMs": self.minimum_ms,
+                      "windowStartMs": left, "windowEndMs": right,
+                      "earlyRejected": not precise}
+            if precise:
+                record.update(interval)
+                record["durationMs"] = duration
+                description = f"duration {Decimal(duration) / 1000} s"
+            else:
+                record["maximumDurationMs"] = maximum_ms
+                description = f"maximum possible duration {Decimal(maximum_ms) / 1000} s; further refinement skipped"
+            start = interval["startMs"] if precise else left
+            label = "interval" if precise else "candidate window"
+            record["message"] = (f"Boss fight {label} {_display_timestamp(start)} -> {_display_timestamp(right)} "
+                                 f"rejected: {description}; minimum {Decimal(self.minimum_ms) / 1000} s "
+                                 "(below_minimum_duration).")
+            # Persist before notifying the controller; failures must not silently
+            # discard the reason even if a later window or connection fails.
+            with self.path.open("a", encoding="utf-8", newline="\n") as destination:
+                destination.write(json.dumps(record) + "\n")
+                destination.flush()
+                os.fsync(destination.fileno())
+            self.rejected_windows.append((left, right))
+            self.on_progress(record)
+
+
+def _display_timestamp(timestamp_ms: int) -> str:
+    seconds, millis = divmod(timestamp_ms, 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
+
+
 def refine_boundaries(game_name: str, video: Path, detections: Path, output: Path,
                       service_config: ServiceConfig, vision_config: VisionConfig, *,
                       api_token: str = "", on_progress: Callable[[dict], None],
@@ -89,13 +156,18 @@ def refine_boundaries(game_name: str, video: Path, detections: Path, output: Pat
                 "model": vision_config.model,
                 "promptSha256": prompt_hash(vision_config.render_prompt(game_name)),
                 "maxImagesPerRequest": vision_config.max_images_per_request,
+                "minimumDurationMs": vision_config.minimum_boss_fight_seconds * 1000,
                 "refinementStepsMs": [5000, 1000]}
     (output / "manifest.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     on_progress({**metadata, "state": "started"})
+    duration_filter = MinimumDurationFilter(metadata["minimumDurationMs"], output, on_progress)
+    duration_filter.inspect(points, duration_ms, stage="coarse")
     for step_ms in (5000, 1000):
         windows = boundary_windows(points, duration_ms)
         for number, (left, right) in enumerate(windows, 1):
             check_cancelled()
+            if duration_filter.excludes(left, right):
+                continue
             # The right endpoint is known already, or is the exclusive EOF.
             last = left + ((right - left - 1) // step_ms) * step_ms
             if last <= left:
@@ -130,15 +202,20 @@ def refine_boundaries(game_name: str, video: Path, detections: Path, output: Pat
                 if list(fresh) != list(range(left + step_ms, last + 1, step_ms)):
                     raise VisionError("Refinement frame timestamps do not match the requested window")
                 points.update(fresh)
+                duration_filter.inspect(points, duration_ms, stage=f"{step_ms // 1000}s")
             except Exception as exc:
                 raise VisionError(f"Boss refinement {step_ms // 1000}s window {left}..{right} ms failed: {exc}") from exc
     check_cancelled()
-    intervals = build_intervals(points, duration_ms)
+    intervals = [interval for interval in build_intervals(points, duration_ms)
+                 if not duration_filter.excludes(interval["startMs"], interval["endMs"])]
     for interval in intervals:
         for key in ("startBoundary", "endBoundary"):
             boundary = interval[key]
             if boundary and boundary["afterMs"] - boundary["beforeMs"] > 1000:
                 raise VisionError("Refinement left an unresolved boundary wider than 1000 ms")
+    duration_filter.inspect(points, duration_ms, stage="final", final=True)
+    intervals = [interval for interval in intervals
+                 if not duration_filter.excludes(interval["startMs"], interval["endMs"])]
     result = {**metadata, "intervals": intervals}
     partial = output / "boss-intervals.partial.json"
     final = output / "boss-intervals.json"

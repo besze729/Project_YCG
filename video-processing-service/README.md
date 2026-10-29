@@ -95,7 +95,8 @@ read from the filename, including fractional seconds and nonzero sampling starts
 The vision configuration is separate from FFmpeg settings:
 
 - [`vision/config.toml`](src/video_processing_service/vision/config.toml) selects
-  the LM Studio base URL, model, batch limit, timeouts, output-token limit and prompt file.
+  the LM Studio base URL, model, batch limit, timeouts, output-token limit, prompt file
+  and `minimum_boss_fight_seconds` (default 10).
 - [`vision/boss_fight_prompt.tpl`](src/video_processing_service/vision/boss_fight_prompt.tpl)
   is the editable prompt. `<?GAME_TITLE>` is replaced once with `gameName`.
 - `YCG_VISION_CONFIG` selects a partial TOML override containing `[vision]`.
@@ -182,9 +183,23 @@ interior every 5 seconds, reuse known endpoints, then sample every observed
 transition's interior every 1 second. Both passes use the existing external vision
 prompt, game title and configured batch limit (five by default), captured once
 for the refinement request. No conversation history or knowledge-base content is
-added. All observed transitions are retained, including additional splits found
-inside a window; no short-gap merging or minimum-duration filter is applied.
+added. All observed transitions are preserved as raw evidence, including additional
+splits found inside a window; no short-gap merging is applied.
 Actual source timestamps determine windows, even with a non-30-second coarse grid.
+
+`[vision] minimum_boss_fight_seconds = 10` rejects candidate intervals strictly
+shorter than 10 seconds. It accepts a nonnegative integer: zero disables filtering,
+and exactly-at-threshold intervals remain. Configure it in the vision TOML or a
+`YCG_VISION_CONFIG` override; it is captured once per refinement request and stored
+as `minimumDurationMs` in the manifest/final artifact. Clipped fights use only their
+observed in-video duration. The raw model predictions are never rewritten.
+
+After coarse loading and each completed window, Python checks a conservative upper
+bound on each candidate's duration. Its earliest possible start on the 1s grid is
+the preceding negative timestamp plus `min(1000, firstPositiveMs - precedingNegativeMs)`;
+a clipped start is fixed. The next negative timestamp or EOF bounds its end.
+Only when this maximum is below the threshold are remaining candidate windows
+skipped, including their FFmpeg and model work. Otherwise refinement continues.
 
 Intervals are `[startMs, endMs)`: first positive frame through first subsequent
 negative frame. `startBoundary` and `endBoundary` contain `beforeMs`/`afterMs`
@@ -197,7 +212,8 @@ list without model calls. Fights hidden entirely between equal coarse states
 remain undetected. Temporal resolution does not guarantee model accuracy.
 
 The output directory contains `manifest.json`, per-step/per-window `frames/` and
-`detections.jsonl` evidence, and `boss-intervals.json`. The final version-1 JSON
+`detections.jsonl` evidence, `rejected-intervals.jsonl`, and `boss-intervals.json`.
+The latter contains only accepted fights. The final version-1 JSON
 contains `intervals`, source/detection paths, duration, game title, model,
 rendered-prompt hash, batch size and refinement steps. It is atomically published
 only after complete success. Intermediate evidence and partial batch files remain
@@ -209,6 +225,18 @@ Running events carry `stepSeconds`, `windowIndex`, `totalWindows`,
 percentages describe the current window. Nested sampling/detection completion
 does not terminate the whole stage. The final event includes `outputFile` and
 `intervals`. Java logs these intervals to its console and the Activity log.
+
+Each rejection is immediately flushed to `rejected-intervals.jsonl` and emitted
+as a nonterminal `state: "warning"` event with `reason: "below_minimum_duration"`,
+`message`, `stage` (`coarse`, `5s`, `1s`, or `final`), `minimumDurationMs`,
+`windowStartMs`, `windowEndMs`, and `earlyRejected`. Early rejections include
+`maximumDurationMs`; fully resolved ones include the interval fields and
+`durationMs`. Window bounds are evidence envelopes, not necessarily exact fight
+boundaries. The controller preserves the details, logs at WARN, and replays them
+as warnings in the Activity log. Warning events do not fail a job. Evidence and
+rejection files survive later failures; final output still requires success.
+Older version-1 artifacts without the threshold remain readable and are not
+automatically filtered when their chapters are reopened.
 
 ## FFmpeg configuration
 

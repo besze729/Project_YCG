@@ -113,7 +113,8 @@ export default function App() {
         ? `${event.videoName}: sampled frames ready (${event.frame_count}) — ${event.outputDirectory}`
         : `${event.videoName}: proxy ready — ${event.outputVideo}`, `${videoKey}:progress`)
       else if (event.state !== 'failed' && (event.state !== 'job_started' || !resumed)) {
-        log(event.state === 'job_failed' ? 'error' : event.state === 'job_completed' ? 'success' : 'info', event.message, `${id}:${event.id}`)
+        log(event.state === 'job_failed' ? 'error' : event.state === 'job_completed' ? 'success'
+          : event.state === 'warning' ? 'warning' : 'info', event.message, `${id}:${event.id}`)
       }
       if (event.state === 'job_completed' || event.state === 'job_failed') {
         if (event.state === 'job_completed' && event.resultsAvailable) setResultJobId(id)

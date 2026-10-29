@@ -75,7 +75,7 @@ public class VideoProcessingClient {
                     var event = mapper.readTree(line);
                     String state = event.path("state").asString("");
                     if ("heartbeat".equals(state)) continue;
-                    if (!java.util.Set.of("started", "running", "completed", "failed").contains(state)) {
+                    if (!java.util.Set.of("started", "running", "completed", "failed", "warning").contains(state)) {
                         throw new IOException("Video service returned an invalid progress event.");
                     }
                     events.accept(event);

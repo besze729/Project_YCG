@@ -578,6 +578,20 @@ The initial system does not need to include:
 
 The relevant interval begins when the actual boss fight starts and ends when the boss is defeated.
 
+For the initial boss-only pipeline, apply a configurable minimum detected fight
+duration, defaulting to 10 seconds. Reject intervals strictly shorter than the
+minimum; an interval exactly at the minimum is retained. Use the observed
+in-video duration for fights clipped at a video edge. Zero disables this filter.
+Rejected intervals do not become boss chapters, and their surrounding
+Exploration sections form one continuous section.
+
+This is an explicit heuristic, not a correction of the visual model's evidence.
+Keep raw predictions and persist each rejection with its reason and threshold;
+show it at warning level in the activity log. Further refinement may be skipped
+only when the maximum possible interval duration under the sampling rules is
+already below the minimum. In that case retain the enclosing time window and
+duration upper bound rather than claiming exact start/end times.
+
 A particularly useful visual signal may be the presence and state of the boss health bar.
 
 Conceptually:
@@ -836,8 +850,9 @@ window containing the plain chapter list in a selectable textarea. For multiple
 videos, display one video's list at a time with a video selector. Filenames,
 explanations and validation notes must remain outside the copyable chapter text.
 
-Preserve detected boundaries rather than extending or merging short sections to
-meet YouTube's chapter-count or minimum-duration requirements. Report those limits
+Preserve accepted interval boundaries after minimum-duration filtering rather
+than extending or merging short sections to meet YouTube's chapter-count or
+minimum-duration requirements. Report those limits
 separately from the text. Original millisecond interval evidence remains unchanged;
 the export uses whole seconds, resolving timestamp collisions without duplicate
 or zero-length chapters. Boss names and richer chapter labels remain later work.

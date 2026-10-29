@@ -229,7 +229,11 @@ public class ProxyJobs {
         }
         var enriched = ((ObjectNode) event).deepCopy();
         enriched.put("videoIndex", index).put("videoName", video.name()).put("operation", operation);
-        enriched.put("message", video.name() + ": " + operation + " " + event.path("state").asString());
+        boolean warning = event.path("state").asString().equals("warning");
+        String relayMessage = video.name() + ": " + (warning ? event.path("message").asString()
+                : operation + " " + event.path("state").asString());
+        enriched.put("message", relayMessage);
+        if (warning) LOG.warn("{}", relayMessage);
         job.emit(enriched);
         if (refinementCompleted) {
             var intervals = event.path("intervals");

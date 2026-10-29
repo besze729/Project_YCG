@@ -2,6 +2,7 @@
 base_url = "http://127.0.0.1:1234"
 model = "qwen3-vl-8b-instruct"
 max_images_per_request = 5
+minimum_boss_fight_seconds = 10
 connect_timeout_seconds = 3
 request_timeout_seconds = 600
 max_output_tokens = 1024

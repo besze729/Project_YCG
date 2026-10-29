@@ -70,6 +70,35 @@ precision, not a guarantee of visual classification accuracy: short fights hidde
 between equal coarse states can still be missed. Partial evidence remains useful
 for inspection; automatic resume and OCR remain out of scope for this increment.
 
+### Accepted amendment: minimum fight duration (2026-10-29)
+
+The original refinement increment deliberately preserved even isolated positives
+to keep model errors inspectable. Manual review found false positives at coarse
+sample timestamps that survived as one-second fights because endpoint predictions
+are reused. Keep that raw evidence, but supersede unconditional retention in the
+derived interval list with an explicit, configurable duration policy.
+
+Python rejects candidates shorter than `minimum_boss_fight_seconds` (default 10;
+zero restores unfiltered behavior). Equality is retained, including for clipped
+intervals measured only within the video. Do not merge gaps or alter model output.
+Check after coarse loading and each completed refinement window. Skip a candidate's
+remaining windows only when its maximum possible duration on the existing 1s
+refinement grid is below the minimum. For a negative left endpoint L and first
+positive P, the earliest possible positive is `L + min(1000, P - L)` milliseconds;
+the following negative timestamp, or EOF, bounds the end. A clipped start is fixed.
+This envelope also bounds any additional fights that refinement could discover
+inside it. Retained intervals still require boundary brackets at most 1s wide.
+
+Persist each rejection immediately in `rejected-intervals.jsonl` and emit a
+nonterminal warning through the controller's WARN logger and replayable Activity
+log. Early rejection records the envelope and upper bound, not fabricated exact
+boundaries. Store the threshold in the manifest and final artifact; preserve raw
+JSONL predictions. Existing artifacts remain readable without retroactive filtering.
+
+This trades genuine short-fight recall for fewer noisy chapters and saves image
+extraction/model calls on provably short candidates. It does not improve the
+visual classifier; game-specific visual guidance remains future work.
+
 ### Boss Name Recognition
 
 - Extract multiple frames from each detected fight interval.
