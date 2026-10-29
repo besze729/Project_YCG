@@ -41,6 +41,14 @@ ignored `output/vision-smoke-*`. Stop the simulation with Ctrl+C.
 ## Observations
 
 <!-- begin:observations -->
+- 2026-10-29: Updated `tests/refinement_smoke.py` passed against the same local
+  protocol mock with real FFmpeg and the production API/client. With the default
+  10s minimum, five new frames yielded one durable nonterminal warning and no
+  accepted interval; the 1s pass was skipped. With minimum zero, the original
+  clipped 0-1s interval and both refinement passes remained. The simulation logged
+  three HTTP 200 `/v1/chat/completions` requests (one filtered, two unfiltered).
+  Artifacts: ignored `output/refinement-smoke-jgudr637`. This establishes transport,
+  filtering and early skipping for these deterministic responses, not AI accuracy.
 - 2026-10-27: `tests/refinement_smoke.py` passed with real FFmpeg sampling and
   the production refinement API. The sole `lmstudio` member served both 5-second
   and 1-second passes over HTTP 200; no members were idle. Seeded coarse evidence

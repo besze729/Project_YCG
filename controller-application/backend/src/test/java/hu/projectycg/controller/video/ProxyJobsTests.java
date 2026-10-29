@@ -145,6 +145,45 @@ class ProxyJobsTests {
         assertThat(failed.message).contains("missing intervals");
     }
 
+    @Test void minimumDurationWarningIsLoggedPersistedAndReplayedWithoutFailingJob() throws Exception {
+        refinementResponse = """
+                {"state":"warning","reason":"below_minimum_duration","message":"Candidate rejected: maximum possible duration 9000 ms; minimum 10000 ms.","minimumDurationMs":10000,"maximumDurationMs":9000,"windowStartMs":775000,"windowEndMs":785000,"earlyRejected":true,"stage":"5s"}
+                {"state":"completed","intervals":[]}
+                """;
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(ProxyJobs.class);
+        var appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            var job = jobs.start(request("Game", source("one.mp4")));
+            await(job);
+            assertThat(job.state).as(job.message).isEqualTo("completed");
+            var warnings = Files.readAllLines(job.directory.resolve("events.jsonl")).stream()
+                    .map(mapper::readTree).filter(event -> event.path("state").asString().equals("warning")).toList();
+            assertThat(warnings).hasSize(1);
+            var warning = warnings.getFirst();
+            assertThat(warning.path("message").asString()).isEqualTo(
+                    "one.mp4: Candidate rejected: maximum possible duration 9000 ms; minimum 10000 ms.");
+            assertThat(warning.path("reason").asString()).isEqualTo("below_minimum_duration");
+            assertThat(warning.path("maximumDurationMs").asLong()).isEqualTo(9000);
+            assertThat(appender.list).anySatisfy(event -> {
+                assertThat(event.getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN);
+                assertThat(event.getFormattedMessage()).isEqualTo(warning.path("message").asString());
+            });
+            assertThat(jobs.results(job.id).path("videos").get(0).path("text").asString())
+                    .isEqualTo("00:00 Exploration\n");
+            var restored = new ProxyJobs(new VideoProcessingClient(properties), properties, knowledgeBase);
+            try {
+                var replay = new ByteArrayOutputStream();
+                restored.get(job.id).stream(0, replay);
+                assertThat(replay.toString(StandardCharsets.UTF_8)).contains(warning.toString());
+            } finally { restored.shutdown(); }
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
+
     @Test void exposesSavedChapterResultsAndSupportsReloadedJobs() throws Exception {
         var mvc = MockMvcBuilders.standaloneSetup(new ProxyController(jobs)).build();
         var job = jobs.start(request("Game", source("one.mp4"), source("two.mp4")));

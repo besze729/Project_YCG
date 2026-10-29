@@ -143,8 +143,17 @@ boundaries at 5-second then 1-second spacing. Each video's `bossRefinementDirect
 contains `boss-intervals.json` plus intermediate evidence. See the
 [refinement contract](../video-processing-service/README.md#boss-fight-boundary-refinement).
 Final intervals are logged in time order to the Java console and persisted SSE
-`state: "interval"` messages for Activity log replay. Empty results are explicit;
-video-edge intervals are marked as clipped. Java then formats and saves the plain
+`state: "interval"` messages for Activity log replay. Empty results are explicit.
+Python's configurable `vision.minimum_boss_fight_seconds` defaults to 10 seconds;
+only accepted intervals reach chapter formatting. Each rejection arrives as a
+nonterminal `state: "warning"` event, is logged at WARN with its detailed reason,
+and is persisted/replayed as a warning in the Activity log. The event carries the
+threshold and either exact duration or a conservative upper bound for early
+rejection. Raw predictions and `rejected-intervals.jsonl` remain available for
+debugging. Set the Python value to zero to disable filtering; there is no UI field.
+Previously completed results are not retroactively filtered.
+
+Accepted video-edge intervals are marked as clipped. Java then formats and saves the plain
 YouTube chapter list. Boss-name OCR and richer chapter labels remain deferred.
 Python responds
 with `application/x-ndjson`, one progress object per line, plus idle heartbeats.
