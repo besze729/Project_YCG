@@ -21,7 +21,7 @@ the source files.
 | Area | Current behavior |
 | --- | --- |
 | Desktop workspace | English React/TypeScript UI in Electron, with native file selection, multi-video drag and drop, and an Activity log. |
-| Game knowledge | Local Qwen3 generates structured boss knowledge using web research through Parallel Search MCP. Validated JSON is saved locally; rebuilding existing knowledge requires confirmation. |
+| Game knowledge | Local Qwen3 14B GGUF, quantized as **Q5_K_M**, generates structured boss knowledge using web research through Parallel Search MCP. Validated JSON is saved locally; rebuilding existing knowledge requires confirmation. |
 | Video preprocessing | FFmpeg creates an H.264 proxy up to 1280 × 720, preserving aspect ratio. The default uses CUDA decoding/scaling and NVENC encoding at 2500 kbps. CPU processing is configurable. |
 | Coarse visual detection | Samples the proxy every 30 seconds by default. Local Qwen3-VL evaluates groups of up to five images for a boss health bar in the top region. |
 | Boundary refinement | Refines observed state changes at 5-second, then 1-second spacing, reusing existing predictions and retaining additional transitions. |
@@ -84,7 +84,7 @@ rejection recorded separately rather than silently rewritten as a negative.
 | `controller-application/frontend/` | React, TypeScript, Vite and Electron; native paths, progress and result display | Desktop app |
 | `controller-application/backend/` | Java 25 / Spring Boot; orchestration, knowledge generation, job persistence, SSE events and chapter formatting | `http://127.0.0.1:8080` |
 | `video-processing-service/` | Python / FastAPI; FFmpeg operations, vision adapter, refinement and filtering | `http://127.0.0.1:8090` |
-| LM Studio | Local Qwen3 knowledge generation and Qwen3-VL image inference | `http://127.0.0.1:1234` |
+| LM Studio | Local Qwen3 14B GGUF (Q5_K_M) knowledge generation and Qwen3-VL image inference | `http://127.0.0.1:1234` |
 
 The desktop calls the controller over REST and receives progress over SSE. The
 controller calls Python over REST with streamed NDJSON progress. Python owns
@@ -104,8 +104,11 @@ Prerequisites:
 - FFmpeg and FFprobe on `PATH`, or their paths configured in the video service.
 - For the default proxy settings, a compatible NVIDIA GPU/driver and an FFmpeg
   build supporting CUDA scaling and NVENC. Select CPU settings otherwise.
-- A running LM Studio server with the configured models available: `qwen3-14b`
-  for knowledge generation and `qwen3-vl-8b-instruct` for vision by default.
+- A running LM Studio server with **Qwen3 14B GGUF (Q5_K_M)** for knowledge
+  generation and Qwen3-VL 8B Instruct for vision. Their default API identifiers
+  are `qwen3-14b` and `qwen3-vl-8b-instruct`, respectively. The knowledge model's
+  `qwen3-14b` identifier does not encode or enforce quantization: select the
+  **Q5_K_M** model in LM Studio and match `LM_STUDIO_MODEL` to its served identifier.
 - Parallel Search MCP configured in LM Studio for knowledge research, and an
   LM Studio token with the required access. See the
   [LM Studio setup guide](controller-application/README.md#lm-studio-configuration).
@@ -168,7 +171,7 @@ browser cannot supply them. An all-in-one installer is not provided yet.
 | Vision model, endpoint, batch size, timeouts | [vision TOML](video-processing-service/src/video_processing_service/vision/config.toml), optional `YCG_VISION_CONFIG` | `qwen3-vl-8b-instruct`, up to 5 images/request |
 | Minimum accepted fight duration | `vision.minimum_boss_fight_seconds` in the same vision TOML | 10 seconds; `0` disables filtering |
 | Visual detection instructions | [external prompt template](video-processing-service/src/video_processing_service/vision/boss_fight_prompt.tpl) | Top-region boss health-bar detection |
-| Knowledge model, endpoint and search integration | Controller `LM_STUDIO_*` environment variables | `qwen3-14b`, `mcp/parallel-search` |
+| Knowledge model, endpoint and search integration | Controller `LM_STUDIO_*` environment variables | Qwen3 14B GGUF **Q5_K_M**; API identifier `qwen3-14b`; integration `mcp/parallel-search` |
 | Job and knowledge output roots | `YCG_PROXY_OUTPUT_ROOT`, `YCG_KNOWLEDGE_BASE_OUTPUT_ROOT` | Backend `data/` subdirectories |
 
 Python loads configuration per request; vision settings and the prompt are
@@ -285,7 +288,7 @@ detailed documents rather than replacing them.
 | [Controller architecture ADR](docs/adr/controller-application.md) | Java/Python responsibilities, technology stack and native Electron file paths. |
 | [Video processing ADR](docs/adr/video-processing-service.md) | Python-owned FFmpeg processing, proxy generation, sampling and timestamp mapping. |
 | [720p proxy ADR](docs/adr/use-720p-proxy-video.md) | Current proxy resolution and bitrate decision; supersedes the [480p ADR](docs/adr/use-480p-proxy-video.md). |
-| [Qwen3 knowledge ADR](docs/adr/use-qwen3-for-knowledge-base.md) | Local language model choice for knowledge generation. |
+| [Qwen3 knowledge ADR](docs/adr/use-qwen3-for-knowledge-base.md) | Qwen3 14B GGUF with Q5_K_M quantization for knowledge generation. |
 | [Parallel Search ADR](docs/adr/use-parallel-search-mcp.md) | Web-search integration for game research. |
 | [Qwen3-VL recognition ADR](docs/adr/use-qwen3-vl-for-boss-fight-recognition.md) | Visual model, batch detection, boundary refinement and the accepted minimum-duration amendment; later OCR direction. |
 | [Agent instructions](AGENTS.md) | Repository engineering rules, evidence preservation and documentation responsibilities. |

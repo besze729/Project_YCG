@@ -348,13 +348,17 @@ A timeout or closed browser does not guarantee that LM Studio stopped processing
 
 ### LM Studio configuration
 
-Defaults target the local Qwen3 model and the configured Parallel Search MCP
-server. Environment variables can override connection settings:
+Knowledge generation uses **Qwen3 14B GGUF with Q5_K_M quantization** in LM Studio,
+as recorded in the [knowledge-model ADR](../docs/adr/use-qwen3-for-knowledge-base.md),
+with the configured Parallel Search MCP server. The default API model identifier
+is `qwen3-14b`; it does not encode or enforce the quantization. Select the Q5_K_M
+model in LM Studio and set `LM_STUDIO_MODEL` to its served identifier if different.
+Environment variables can override connection settings:
 
 | Environment variable | Default |
 | --- | --- |
 | `LM_STUDIO_BASE_URL` | `http://127.0.0.1:1234` |
-| `LM_STUDIO_MODEL` | `qwen3-14b` |
+| `LM_STUDIO_MODEL` | `qwen3-14b` (API identifier for the Qwen3 14B GGUF Q5_K_M model selected in LM Studio) |
 | `LM_STUDIO_CONNECT_TIMEOUT` | `3s` |
 | `LM_STUDIO_REQUEST_TIMEOUT` | `10m` |
 | `LM_STUDIO_API_TOKEN` | Empty; no Authorization header |
