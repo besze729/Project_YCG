@@ -19,7 +19,7 @@
   local REST; that service owns FFmpeg execution (replaces direct controller
   invocation, following the dedicated video-processing-service ADR).
 - **CV / OCR:** Python + OpenCV / appropriate AI models
-- **Local LLM:** LM Studio + Qwen3
+- **Knowledge-generation LLM:** LM Studio + Qwen3 14B GGUF (Q5_K_M quantization)
 - **Knowledge Base:** JSON files
 - **Job state:** In-memory / JSON initially
 - **Architecture:** Modular monolith, not a microservice architecture

@@ -45,7 +45,7 @@ refinement. Detected fights are labeled `BOSS_FIGHT`; other sections are labeled
 ## Build knowledge base for the game
 
 Research:
-Qwen3 14B Q5_K_M
+Qwen3 14B GGUF (Q5_K_M quantization)
 LM Studio
 Parallel Search MCP
 
